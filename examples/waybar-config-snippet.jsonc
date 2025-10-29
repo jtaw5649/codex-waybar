@@ -1,13 +1,10 @@
 {
   "custom/codex": {
-    "exec": "~/.local/share/codex-waybar/scripts/codex-waybar-module.sh",
+    "exec": "codex-waybar --print-cache ~/.cache/codex-waybar/latest.json",
     "return-type": "json",
     "format": "{text}",
     "tooltip": true,
     "escape": true,
-    "interval": 1,
-    "signal": 5,
-    "restart-interval": 10,
-    "on-scroll-up": "pkill -RTMIN+5 waybar"
+    "interval": 1
   }
 }

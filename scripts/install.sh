@@ -30,11 +30,15 @@ if [[ -d "${REPO_ROOT}/examples" ]]; then
   install -m 644 "${REPO_ROOT}"/examples/* "${SHARE_DIR}/examples/"
 fi
 
-if [[ -f "${REPO_ROOT}/scripts/codex-waybar-module.sh" ]]; then
-  mkdir -p "${SHARE_DIR}/scripts"
-  install -m 755 "${REPO_ROOT}/scripts/codex-waybar-module.sh" "${SHARE_DIR}/scripts/codex-waybar-module.sh"
+SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
+if [[ -f "${REPO_ROOT}/systemd/codex-waybar.service" ]]; then
+  mkdir -p "${SYSTEMD_USER_DIR}"
+  install -m 644 "${REPO_ROOT}/systemd/codex-waybar.service" "${SYSTEMD_USER_DIR}/codex-waybar.service"
 fi
 
 echo "codex-waybar installed successfully."
 echo "Binary location : ${BIN_DIR}/codex-waybar"
 echo "Docs/examples   : ${SHARE_DIR}"
+if [[ -f "${SYSTEMD_USER_DIR}/codex-waybar.service" ]]; then
+  echo "Systemd unit    : ${SYSTEMD_USER_DIR}/codex-waybar.service"
+fi

@@ -32,6 +32,7 @@ Use the bundled script to build and install into `~/.local/bin` (override with `
 
 ```bash
 ./scripts/install.sh
+systemctl --user daemon-reload
 ```
 
 ### Uninstalling
@@ -63,22 +64,33 @@ Run `codex-waybar --help` for the full set of flags. Key arguments:
 
 This project ships in the cache-polling configuration that is proven to work reliably today. `codex-waybar` tails the active Codex session, writes the latest payload atomically to a cache file, and Waybar polls that file once per second.
 
-### 1. Launch the cache writer (Hyprland exec-once)
+### 1. Launch the cache writer (systemd user service)
 
-Hyprland’s autostart keeps the helper alive without needing a separate service:
-
-```ini
-# ~/.config/hypr/autostart.conf
-exec-once = codex-waybar \
-  --cache-file ~/.cache/codex-waybar/latest.json \
-  --max-chars 110
-```
+The installer copies a ready-made user unit to `~/.config/systemd/user/codex-waybar.service`.
+Enable it once and bind it to the graphical session target:
 
 ```bash
-hyprctl dispatch exec "codex-waybar --cache-file ~/.cache/codex-waybar/latest.json --max-chars 110"
+systemctl --user daemon-reload
+systemctl --user enable --now codex-waybar.service
+systemctl --user add-wants graphical-session.target codex-waybar.service
 ```
 
-If you prefer a supervisor, adapt `examples/codex-waybar.service` and enable it with `systemctl --user`. Hyprland `exec-once` remains the first choice because it avoids duplicate launches and integrates with your compositor startup.
+Hyprland users should ensure session variables are imported into systemd so the
+service inherits `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, etc. Add the following
+to your Hyprland config:
+
+```ini
+# ~/.config/hypr/hyprland.conf
+exec-once = dbus-update-activation-environment --systemd --all
+exec-once = systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_SESSION_TYPE
+```
+
+Restart the service after changing any CLI flags or upgrading the binary:
+
+```bash
+systemctl --user restart codex-waybar.service
+systemctl --user status codex-waybar.service
+```
 
 ### 2. Configure Waybar to poll the cache
 
