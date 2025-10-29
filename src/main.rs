@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use dirs::home_dir;
 use glob::glob;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Parser, Debug)]
@@ -57,7 +57,7 @@ struct Args {
     start_at_beginning: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct WaybarOutput {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,6 +271,11 @@ fn locate_session_file(root: &Path, session_id: &str) -> Result<Option<PathBuf>>
 
 fn read_new_lines(path: &Path, offset: &mut u64) -> io::Result<Vec<String>> {
     let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if *offset > file_len {
+        *offset = 0;
+    }
+
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(*offset))?;
 
@@ -298,22 +303,40 @@ fn prime_session(
     cache_path: &Path,
     start_at_beginning: bool,
 ) -> Result<Option<WaybarOutput>> {
-    if !path.exists() {
-        *offset = 0;
-        return Ok(None);
-    }
+    let metadata = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            *offset = 0;
+            return Ok(None);
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     if start_at_beginning {
         *offset = 0;
     } else {
-        *offset = fs::metadata(path)?.len();
+        *offset = metadata.len();
     }
 
-    let file = File::open(path)?;
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            *offset = 0;
+            return Ok(None);
+        }
+        Err(err) => return Err(err.into()),
+    };
     let reader = BufReader::new(file);
     let mut last_payload: Option<WaybarOutput> = None;
     for line in reader.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(line) => line,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                *offset = 0;
+                return Ok(None);
+            }
+            Err(err) => return Err(err.into()),
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -529,4 +552,74 @@ fn print_cache(path: &Path) -> Result<()> {
 
     io::stdout().flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::{tempdir, NamedTempFile};
+
+    #[test]
+    fn prime_session_returns_none_when_file_missing() -> Result<()> {
+        let dir = tempdir()?;
+        let session_path = dir.path().join("missing-session.jsonl");
+        let cache_path = dir.path().join("cache.json");
+        let mut offset = 42;
+
+        let result = prime_session(&session_path, &mut offset, 120, &cache_path, false)?;
+
+        assert!(result.is_none());
+        assert_eq!(offset, 0);
+        assert!(!cache_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn prime_session_reads_last_payload_and_writes_cache() -> Result<()> {
+        let dir = tempdir()?;
+        let session_path = dir.path().join("session.jsonl");
+        let cache_path = dir.path().join("cache.json");
+        let mut file = File::create(&session_path)?;
+        let payload_one = json!({
+            "timestamp": "2025-10-29T12:00:00Z",
+            "type": "event_msg",
+            "payload": { "type": "agent_reasoning", "text": "**First step** details" }
+        });
+        let payload_two = json!({
+            "timestamp": "2025-10-29T12:01:00Z",
+            "type": "event_msg",
+            "payload": { "type": "agent_reasoning", "text": "Second step" }
+        });
+        writeln!(file, "{payload_one}")?;
+        writeln!(file, "{payload_two}")?;
+
+        let mut offset = 0;
+        let result = prime_session(&session_path, &mut offset, 120, &cache_path, false)?;
+
+        assert!(result.is_some());
+        let payload = result.unwrap();
+        assert_eq!(payload.text, "Second step");
+        assert!(cache_path.exists());
+
+        let cached: WaybarOutput = serde_json::from_str(&fs::read_to_string(cache_path)?)?;
+        assert_eq!(cached.text, "Second step");
+        Ok(())
+    }
+
+    #[test]
+    fn read_new_lines_resets_offset_when_file_shrinks() -> Result<()> {
+        let temp = NamedTempFile::new()?;
+        fs::write(temp.path(), "line1\nline2\n")?;
+        let mut offset = fs::metadata(temp.path())?.len();
+
+        fs::write(temp.path(), "line3\n")?;
+
+        let lines = read_new_lines(temp.path(), &mut offset)?;
+        assert_eq!(lines, vec!["line3".to_string()]);
+        assert_eq!(offset, fs::metadata(temp.path())?.len());
+        Ok(())
+    }
 }
