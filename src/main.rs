@@ -382,9 +382,10 @@ fn process_log_line(line: &str, max_chars: usize) -> Result<Option<WaybarOutput>
     }
 
     let tooltip = build_tooltip(timestamp.as_deref(), raw_text, &sanitized, &truncated);
+    let display_text = phase.clone().unwrap_or_else(|| truncated.clone());
 
     Ok(Some(WaybarOutput {
-        text: truncated,
+        text: display_text,
         tooltip,
         alt: phase,
         class: classes,
