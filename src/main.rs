@@ -91,6 +91,33 @@ struct SessionState {
     offset: u64,
 }
 
+#[derive(Debug, Clone)]
+struct SessionMeta {
+    last_event_timestamp: Option<String>,
+    last_event_instant: Instant,
+    missing_count: u32,
+}
+
+impl SessionMeta {
+    fn new() -> Self {
+        Self {
+            last_event_timestamp: None,
+            last_event_instant: Instant::now(),
+            missing_count: 0,
+        }
+    }
+
+    fn record_event(&mut self, timestamp: Option<String>) {
+        self.last_event_timestamp = timestamp;
+        self.last_event_instant = Instant::now();
+        self.missing_count = 0;
+    }
+
+    fn mark_miss(&mut self) {
+        self.missing_count = self.missing_count.saturating_add(1);
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -136,10 +163,21 @@ fn main() -> Result<()> {
     }
 
     let mut session_states: HashMap<String, SessionState> = HashMap::new();
+    let mut session_meta: HashMap<String, SessionMeta> = HashMap::new();
     let mut last_emitted: Option<SessionEvent> = None;
+
+    for session_id in &tracked_sessions {
+        session_meta
+            .entry(session_id.clone())
+            .or_insert_with(SessionMeta::new);
+    }
+
+    let snapshot = tracked_sessions.clone();
+    tracked_sessions = merge_session_targets(&snapshot, &mut session_meta, args.session_window);
 
     bootstrap_sessions(
         &mut session_states,
+        &mut session_meta,
         &mut last_emitted,
         &tracked_sessions,
         &explicit_paths,
@@ -151,8 +189,14 @@ fn main() -> Result<()> {
 
     loop {
         if auto_discover && last_session_refresh.elapsed() >= session_refresh_interval {
-            tracked_sessions = recent_session_ids(&history_path, args.session_window)?;
+            let discovered = recent_session_ids(&history_path, args.session_window)?;
+            tracked_sessions =
+                merge_session_targets(&discovered, &mut session_meta, args.session_window);
             last_session_refresh = Instant::now();
+        } else {
+            let snapshot = tracked_sessions.clone();
+            tracked_sessions =
+                merge_session_targets(&snapshot, &mut session_meta, args.session_window);
         }
 
         if tracked_sessions.is_empty() {
@@ -160,7 +204,7 @@ fn main() -> Result<()> {
             continue;
         }
 
-        session_states.retain(|id, _| tracked_sessions.contains(id));
+        prune_untracked_sessions(&tracked_sessions, &mut session_states, &mut session_meta);
 
         let mut newest_event: Option<SessionEvent> = None;
 
@@ -175,7 +219,11 @@ fn main() -> Result<()> {
                         args.max_chars,
                         args.start_at_beginning,
                     )? {
+                        let meta_entry = session_meta
+                            .entry(session_id.clone())
+                            .or_insert_with(SessionMeta::new);
                         if let Some(event) = initial_event {
+                            meta_entry.record_event(event.timestamp.clone());
                             newest_event = select_newer_event(
                                 newest_event,
                                 SessionEvent {
@@ -183,8 +231,15 @@ fn main() -> Result<()> {
                                     event,
                                 },
                             );
+                        } else {
+                            meta_entry.missing_count = 0;
                         }
                         entry.insert(state);
+                    } else {
+                        session_meta
+                            .entry(session_id.clone())
+                            .or_insert_with(SessionMeta::new)
+                            .mark_miss();
                     }
                 }
                 Entry::Occupied(mut entry) => {
@@ -196,6 +251,7 @@ fn main() -> Result<()> {
                                 for line in lines {
                                     match process_log_line(&line, args.max_chars) {
                                         Ok(Some(event)) => {
+                                            let timestamp = event.timestamp.clone();
                                             newest_event = select_newer_event(
                                                 newest_event,
                                                 SessionEvent {
@@ -203,6 +259,10 @@ fn main() -> Result<()> {
                                                     event,
                                                 },
                                             );
+                                            session_meta
+                                                .entry(session_id.clone())
+                                                .or_insert_with(SessionMeta::new)
+                                                .record_event(timestamp);
                                         }
                                         Ok(None) => {}
                                         Err(err) => {
@@ -213,6 +273,10 @@ fn main() -> Result<()> {
                             }
                             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                                 reinitialize = true;
+                                session_meta
+                                    .entry(session_id.clone())
+                                    .or_insert_with(SessionMeta::new)
+                                    .mark_miss();
                             }
                             Err(err) => {
                                 eprintln!("Error reading {}: {err}", state.path.display());
@@ -230,7 +294,11 @@ fn main() -> Result<()> {
                             args.start_at_beginning,
                         )? {
                             Some((state, initial_event)) => {
+                                let meta_entry = session_meta
+                                    .entry(session_id.clone())
+                                    .or_insert_with(SessionMeta::new);
                                 if let Some(event) = initial_event {
+                                    meta_entry.record_event(event.timestamp.clone());
                                     newest_event = select_newer_event(
                                         newest_event,
                                         SessionEvent {
@@ -238,11 +306,14 @@ fn main() -> Result<()> {
                                             event,
                                         },
                                     );
+                                } else {
+                                    meta_entry.missing_count = 0;
                                 }
                                 entry.insert(state);
                             }
                             None => {
                                 entry.remove();
+                                session_meta.remove(session_id);
                             }
                         }
                     }
@@ -350,6 +421,61 @@ fn recent_session_ids(history_path: &Path, limit: usize) -> Result<Vec<String>> 
     Ok(ordered)
 }
 
+fn merge_session_targets(
+    discovered: &[String],
+    session_meta: &mut HashMap<String, SessionMeta>,
+    limit: usize,
+) -> Vec<String> {
+    let discovered_set: HashSet<&String> = discovered.iter().collect();
+    session_meta.retain(|id, meta| meta.missing_count < 5 || discovered_set.contains(id));
+
+    let mut combined: Vec<String> = Vec::new();
+
+    for id in discovered {
+        if !combined.contains(id) {
+            combined.push(id.clone());
+        }
+    }
+
+    for id in session_meta.keys() {
+        if !combined.contains(id) {
+            combined.push(id.clone());
+        }
+    }
+
+    if limit > 0 && combined.len() > limit {
+        let mut sorted = combined.clone();
+        sorted.sort_by(|a, b| {
+            let instant_a = session_meta
+                .get(a)
+                .map(|meta| meta.last_event_instant)
+                .unwrap_or_else(Instant::now);
+            let instant_b = session_meta
+                .get(b)
+                .map(|meta| meta.last_event_instant)
+                .unwrap_or_else(Instant::now);
+            instant_a.cmp(&instant_b)
+        });
+
+        let mut retained: Vec<String> = sorted.into_iter().rev().take(limit).collect();
+        retained.reverse();
+
+        combined.retain(|id| retained.contains(id));
+    }
+
+    combined
+}
+
+fn prune_untracked_sessions(
+    tracked: &[String],
+    session_states: &mut HashMap<String, SessionState>,
+    session_meta: &mut HashMap<String, SessionMeta>,
+) {
+    let tracked_set: HashSet<&String> = tracked.iter().collect();
+    session_states.retain(|id, _| tracked_set.contains(id));
+    session_meta.retain(|id, _| tracked_set.contains(id));
+}
+
 fn initialize_session_state(
     session_id: &str,
     explicit_path: Option<&PathBuf>,
@@ -372,6 +498,7 @@ fn initialize_session_state(
 
 fn bootstrap_sessions(
     session_states: &mut HashMap<String, SessionState>,
+    session_meta: &mut HashMap<String, SessionMeta>,
     last_emitted: &mut Option<SessionEvent>,
     tracked_sessions: &[String],
     explicit_paths: &HashMap<String, PathBuf>,
@@ -394,7 +521,11 @@ fn bootstrap_sessions(
             max_chars,
             start_at_beginning,
         )? {
+            let meta_entry = session_meta
+                .entry(session_id.clone())
+                .or_insert_with(SessionMeta::new);
             if let Some(event) = initial_event {
+                meta_entry.record_event(event.timestamp.clone());
                 newest_event = select_newer_event(
                     newest_event,
                     SessionEvent {
@@ -402,8 +533,15 @@ fn bootstrap_sessions(
                         event,
                     },
                 );
+            } else {
+                meta_entry.missing_count = 0;
             }
             session_states.insert(session_id.clone(), state);
+        } else {
+            session_meta
+                .entry(session_id.clone())
+                .or_insert_with(SessionMeta::new)
+                .mark_miss();
         }
     }
 
@@ -861,5 +999,19 @@ mod tests {
 
         let unchanged = select_newer_event(Some(newer.clone()), older.clone()).unwrap();
         assert_eq!(unchanged.session_id, "beta");
+    }
+
+    #[test]
+    fn merge_session_targets_keeps_recently_active_sessions() {
+        let mut meta = HashMap::new();
+        let mut active_meta = SessionMeta::new();
+        active_meta.record_event(Some("2025-10-29T12:00:00Z".to_string()));
+        meta.insert("old-session".to_string(), active_meta);
+
+        let discovered = vec!["new-session".to_string()];
+        let merged = merge_session_targets(&discovered, &mut meta, 2);
+
+        assert!(merged.contains(&"new-session".to_string()));
+        assert!(merged.contains(&"old-session".to_string()));
     }
 }
