@@ -46,6 +46,10 @@ installer runs with systemd support enabled it automatically reloads the user
 daemon, enables+starts `codex-waybar.service`, and restarts `waybar` so the new
 module is active immediately.
 
+Every run also snapshots your existing Waybar configuration into
+`$PREFIX/share/codex-waybar/backups/waybar-<timestamp>` (override with
+`WAYBAR_BACKUP_ROOT`); the backup path is printed at the end of the install.
+
 **Local checkout**
 
 - `git clone https://github.com/jtaw5649/codex-waybar && cd codex-waybar`

@@ -25,6 +25,13 @@ PREFIX_DEFAULT="${HOME}/.local"
 PREFIX="${PREFIX:-$PREFIX_DEFAULT}"
 BIN_DIR="${BIN_DIR:-}"
 SHARE_DIR="${SHARE_DIR:-}"
+SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
+WAYBAR_CONFIG_DIR="${WAYBAR_CONFIG_DIR:-${HOME}/.config/waybar}"
+WAYBAR_BACKUP_ROOT="${WAYBAR_BACKUP_ROOT:-}"
+SKIP_BUILD="${CODEX_WAYBAR_SKIP_BUILD:-0}"
+SKIP_MESON="${CODEX_WAYBAR_SKIP_MESON:-0}"
+SKIP_SYSTEMD="${CODEX_WAYBAR_SKIP_SYSTEMD:-0}"
+SKIP_WAYBAR_RESTART="${CODEX_WAYBAR_SKIP_WAYBAR_RESTART:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +72,7 @@ done
 BIN_DIR="${BIN_DIR:-${PREFIX}/bin}"
 SHARE_DIR="${SHARE_DIR:-${PREFIX}/share/codex-waybar}"
 SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
+WAYBAR_BACKUP_ROOT="${WAYBAR_BACKUP_ROOT:-${SHARE_DIR}/backups}"
 
 cleanup() {
   if [[ -n "${TMP_REPO}" && -d "${TMP_REPO}" ]]; then
@@ -113,15 +121,22 @@ resolve_repo_root() {
 
 REPO_ROOT="$(resolve_repo_root)"
 
-require cargo
+if [[ "${SKIP_BUILD}" != "1" ]]; then
+  require cargo
+fi
 
 echo "==> Using repository at ${REPO_ROOT}"
 pushd "${REPO_ROOT}" >/dev/null
 
-echo "==> Building codex-waybar (release profile)"
-cargo build --release
-
 BIN_SOURCE="${REPO_ROOT}/target/release/codex-waybar"
+
+if [[ "${SKIP_BUILD}" != "1" ]]; then
+  echo "==> Building codex-waybar (release profile)"
+  cargo build --release
+else
+  echo "==> Skipping cargo build (CODEX_WAYBAR_SKIP_BUILD=1)"
+fi
+
 if [[ ! -x "${BIN_SOURCE}" ]]; then
   echo "Error: expected binary at ${BIN_SOURCE} but none was found." >&2
   exit 1
@@ -140,7 +155,22 @@ if [[ -d "${REPO_ROOT}/examples" ]]; then
   install -m 644 "${REPO_ROOT}"/examples/* "${SHARE_DIR}/examples/"
 fi
 
-if command -v meson >/dev/null 2>&1; then
+if [[ -d "${WAYBAR_CONFIG_DIR}" ]]; then
+  timestamp="$(date +%Y%m%d%H%M%S)"
+  backup_dir="${WAYBAR_BACKUP_ROOT}/waybar-${timestamp}"
+  echo "==> Backing up Waybar configuration to ${backup_dir}"
+  mkdir -p "${backup_dir}"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a -- "${WAYBAR_CONFIG_DIR}/" "${backup_dir}/"
+  else
+    cp -a "${WAYBAR_CONFIG_DIR}/." "${backup_dir}/"
+  fi
+  echo "Waybar configuration backup stored at ${backup_dir}"
+else
+  echo "==> Skipping Waybar backup; ${WAYBAR_CONFIG_DIR} not found."
+fi
+
+if [[ "${SKIP_MESON}" != "1" ]] && command -v meson >/dev/null 2>&1; then
   echo "==> Building codex shimmer Waybar module"
   pushd "${REPO_ROOT}/cffi/codex_shimmer" >/dev/null
   BUILD_DIR="${BUILD_DIR:-build}"
@@ -152,11 +182,13 @@ if command -v meson >/dev/null 2>&1; then
   meson compile -C "${BUILD_DIR}"
   meson install -C "${BUILD_DIR}"
   popd >/dev/null
+elif [[ "${SKIP_MESON}" == "1" ]]; then
+  echo "==> Skipping Meson build (CODEX_WAYBAR_SKIP_MESON=1)"
 else
   echo "==> Meson not found; skipping CFFI module build. Install meson to build wb_codex_shimmer." >&2
 fi
 
-if [[ ${INSTALL_SYSTEMD} -eq 1 && -f "${REPO_ROOT}/systemd/codex-waybar.service" ]]; then
+if [[ ${INSTALL_SYSTEMD} -eq 1 && "${SKIP_SYSTEMD}" != "1" && -f "${REPO_ROOT}/systemd/codex-waybar.service" ]]; then
   echo "==> Installing user systemd unit"
   mkdir -p "${SYSTEMD_USER_DIR}"
   install -m 644 "${REPO_ROOT}/systemd/codex-waybar.service" "${SYSTEMD_USER_DIR}/codex-waybar.service"
@@ -166,14 +198,18 @@ if [[ ${INSTALL_SYSTEMD} -eq 1 && -f "${REPO_ROOT}/systemd/codex-waybar.service"
   systemctl --user enable --now codex-waybar.service
   echo "==> Current service status"
   systemctl --user status codex-waybar.service --no-pager
+elif [[ ${INSTALL_SYSTEMD} -eq 1 && "${SKIP_SYSTEMD}" == "1" ]]; then
+  echo "==> Skipping systemd setup (CODEX_WAYBAR_SKIP_SYSTEMD=1)"
 else
   echo "==> Skipping systemd setup"
 fi
 
-if command -v waybar >/dev/null 2>&1; then
+if [[ "${SKIP_WAYBAR_RESTART}" != "1" ]] && command -v waybar >/dev/null 2>&1; then
   echo "==> Restarting Waybar"
   pkill waybar || true
   (waybar >/dev/null 2>&1 & disown) || true
+elif [[ "${SKIP_WAYBAR_RESTART}" == "1" ]]; then
+  echo "==> Skipping Waybar restart (CODEX_WAYBAR_SKIP_WAYBAR_RESTART=1)"
 else
   echo "==> Waybar executable not found on PATH; skipping Waybar restart"
 fi
