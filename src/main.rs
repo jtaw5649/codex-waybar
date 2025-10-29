@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
     fs::{self, File},
     io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -44,6 +45,10 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     session_refresh_secs: u64,
 
+    /// Track up to N recent Codex sessions concurrently
+    #[arg(long, default_value_t = 4)]
+    session_window: usize,
+
     /// Maximum characters to emit for the Waybar label
     #[arg(long, default_value_t = 120)]
     max_chars: usize,
@@ -57,7 +62,7 @@ struct Args {
     start_at_beginning: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct WaybarOutput {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +71,24 @@ struct WaybarOutput {
     alt: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     class: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RenderedEvent {
+    payload: WaybarOutput,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionEvent {
+    session_id: String,
+    event: RenderedEvent,
+}
+
+#[derive(Debug)]
+struct SessionState {
+    path: PathBuf,
+    offset: u64,
 }
 
 fn main() -> Result<()> {
@@ -87,90 +110,150 @@ fn main() -> Result<()> {
         .sessions_root
         .unwrap_or(default_sessions_root().context("Unable to determine default sessions path")?);
 
-    let mut current_session_id = match (&args.session_id, &args.session_file) {
-        (Some(id), _) => id.clone(),
-        (None, Some(path)) => infer_session_id_from_path(path)
-            .context("Failed to infer session id from --session-file")?,
-        (None, None) => latest_session_id(&history_path)?
-            .context("Could not locate any recent Codex session in history.jsonl")?,
-    };
-
-    let mut current_session_path =
-        resolve_session_path(&sessions_root, &args.session_file, &current_session_id)?;
-
     let poll_interval = Duration::from_millis(args.poll_ms);
     let session_refresh_interval = Duration::from_secs(args.session_refresh_secs);
-
     let mut last_session_refresh = Instant::now() - session_refresh_interval;
-    let mut offset: u64 = 0;
 
-    if let Some(payload) = prime_session(
-        &current_session_path,
-        &mut offset,
-        args.max_chars,
-        cache_path,
-        args.start_at_beginning,
-    )? {
-        emit_payload(&payload, cache_path)?;
+    let auto_discover = args.session_file.is_none() && args.session_id.is_none();
+    let mut tracked_sessions: Vec<String> = if auto_discover {
+        recent_session_ids(&history_path, args.session_window)?
+    } else {
+        match (&args.session_id, &args.session_file) {
+            (Some(id), _) => vec![id.clone()],
+            (None, Some(path)) => vec![
+                infer_session_id_from_path(path)
+                    .context("Failed to infer session id from --session-file")?,
+            ],
+            (None, None) => Vec::new(),
+        }
+    };
+
+    let mut explicit_paths: HashMap<String, PathBuf> = HashMap::new();
+    if let Some(path) = &args.session_file {
+        if let Some(session_id) = tracked_sessions.get(0) {
+            explicit_paths.insert(session_id.clone(), path.clone());
+        }
     }
 
+    let mut session_states: HashMap<String, SessionState> = HashMap::new();
+    let mut last_emitted: Option<SessionEvent> = None;
+
+    bootstrap_sessions(
+        &mut session_states,
+        &mut last_emitted,
+        &tracked_sessions,
+        &explicit_paths,
+        &sessions_root,
+        args.max_chars,
+        args.start_at_beginning,
+        cache_path,
+    )?;
+
     loop {
-        if args.session_file.is_none() && last_session_refresh.elapsed() >= session_refresh_interval
-        {
-            if let Some(latest_id) = latest_session_id(&history_path)? {
-                if latest_id != current_session_id {
-                    if let Some(new_path) = locate_session_file(&sessions_root, &latest_id)? {
-                        current_session_id = latest_id;
-                        current_session_path = new_path;
-                        if let Some(payload) = prime_session(
-                            &current_session_path,
-                            &mut offset,
-                            args.max_chars,
-                            cache_path,
-                            args.start_at_beginning,
-                        )? {
-                            emit_payload(&payload, cache_path)?;
-                        }
-                    } else {
-                        eprintln!("Session {} announced but file not yet available", latest_id);
-                    }
-                }
-            }
+        if auto_discover && last_session_refresh.elapsed() >= session_refresh_interval {
+            tracked_sessions = recent_session_ids(&history_path, args.session_window)?;
             last_session_refresh = Instant::now();
         }
 
-        match read_new_lines(&current_session_path, &mut offset) {
-            Ok(lines) => {
-                for line in lines {
-                    match process_log_line(&line, args.max_chars) {
-                        Ok(Some(payload)) => emit_payload(&payload, cache_path)?,
-                        Ok(None) => {}
-                        Err(err) => {
-                            eprintln!("Failed to process log entry: {err:?}");
+        if tracked_sessions.is_empty() {
+            thread::sleep(poll_interval);
+            continue;
+        }
+
+        session_states.retain(|id, _| tracked_sessions.contains(id));
+
+        let mut newest_event: Option<SessionEvent> = None;
+
+        for session_id in &tracked_sessions {
+            match session_states.entry(session_id.clone()) {
+                Entry::Vacant(entry) => {
+                    let explicit = explicit_paths.get(session_id);
+                    if let Some((state, initial_event)) = initialize_session_state(
+                        session_id,
+                        explicit,
+                        &sessions_root,
+                        args.max_chars,
+                        args.start_at_beginning,
+                    )? {
+                        if let Some(event) = initial_event {
+                            newest_event = select_newer_event(
+                                newest_event,
+                                SessionEvent {
+                                    session_id: session_id.clone(),
+                                    event,
+                                },
+                            );
                         }
+                        entry.insert(state);
                     }
                 }
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                if args.session_file.is_none() {
-                    if let Some(new_path) =
-                        locate_session_file(&sessions_root, &current_session_id)?
+                Entry::Occupied(mut entry) => {
+                    let mut reinitialize = false;
                     {
-                        current_session_path = new_path;
-                        if let Some(payload) = prime_session(
-                            &current_session_path,
-                            &mut offset,
+                        let state = entry.get_mut();
+                        match read_new_lines(&state.path, &mut state.offset) {
+                            Ok(lines) => {
+                                for line in lines {
+                                    match process_log_line(&line, args.max_chars) {
+                                        Ok(Some(event)) => {
+                                            newest_event = select_newer_event(
+                                                newest_event,
+                                                SessionEvent {
+                                                    session_id: session_id.clone(),
+                                                    event,
+                                                },
+                                            );
+                                        }
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            eprintln!("Failed to process log entry: {err:?}");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                                reinitialize = true;
+                            }
+                            Err(err) => {
+                                eprintln!("Error reading {}: {err}", state.path.display());
+                            }
+                        }
+                    }
+
+                    if reinitialize {
+                        let explicit = explicit_paths.get(session_id);
+                        match initialize_session_state(
+                            session_id,
+                            explicit,
+                            &sessions_root,
                             args.max_chars,
-                            cache_path,
                             args.start_at_beginning,
                         )? {
-                            emit_payload(&payload, cache_path)?;
+                            Some((state, initial_event)) => {
+                                if let Some(event) = initial_event {
+                                    newest_event = select_newer_event(
+                                        newest_event,
+                                        SessionEvent {
+                                            session_id: session_id.clone(),
+                                            event,
+                                        },
+                                    );
+                                }
+                                entry.insert(state);
+                            }
+                            None => {
+                                entry.remove();
+                            }
                         }
                     }
                 }
             }
-            Err(err) => {
-                eprintln!("Error reading {}: {err}", current_session_path.display());
+        }
+
+        if let Some(event) = newest_event {
+            if should_emit(&last_emitted, &event) {
+                emit_payload(&event.event.payload, cache_path)?;
+                last_emitted = Some(event);
             }
         }
 
@@ -192,59 +275,12 @@ fn default_sessions_root() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn resolve_session_path(
-    sessions_root: &Path,
-    explicit: &Option<PathBuf>,
-    session_id: &str,
-) -> Result<PathBuf> {
-    let path = match explicit {
-        Some(path) => path.clone(),
-        None => locate_session_file(sessions_root, session_id)?
-            .with_context(|| format!("Unable to find log file for session {}", session_id))?,
-    };
-
-    eprintln!(
-        "Streaming Codex session {} from {}",
-        session_id,
-        path.display()
-    );
-
-    Ok(path)
-}
-
 fn infer_session_id_from_path(path: &Path) -> Option<String> {
     path.file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.split('-').last())
         .and_then(|segment| segment.strip_suffix(".jsonl"))
         .map(|s| s.to_string())
-}
-
-fn latest_session_id(history_path: &Path) -> Result<Option<String>> {
-    let file = match File::open(history_path) {
-        Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-    let reader = BufReader::new(file);
-    let mut latest: Option<String> = None;
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(&line) {
-            Ok(val) => {
-                if let Some(id) = val.get("session_id").and_then(|v| v.as_str()) {
-                    latest = Some(id.to_string());
-                }
-            }
-            Err(err) => {
-                eprintln!("Skipping malformed history entry: {err}");
-            }
-        }
-    }
-    Ok(latest)
 }
 
 fn locate_session_file(root: &Path, session_id: &str) -> Result<Option<PathBuf>> {
@@ -267,6 +303,156 @@ fn locate_session_file(root: &Path, session_id: &str) -> Result<Option<PathBuf>>
     }
 
     Ok(newest_path)
+}
+
+fn recent_session_ids(history_path: &Path, limit: usize) -> Result<Vec<String>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let file = match File::open(history_path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        match line {
+            Ok(line) => lines.push(line),
+            Err(err) => {
+                eprintln!("Skipping malformed history entry: {err}");
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+
+    for line in lines.iter().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<Value>(line) {
+            if let Some(id) = val.get("session_id").and_then(|v| v.as_str()) {
+                if seen.insert(id.to_string()) {
+                    ordered.push(id.to_string());
+                    if ordered.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    ordered.reverse();
+    Ok(ordered)
+}
+
+fn initialize_session_state(
+    session_id: &str,
+    explicit_path: Option<&PathBuf>,
+    sessions_root: &Path,
+    max_chars: usize,
+    start_at_beginning: bool,
+) -> Result<Option<(SessionState, Option<RenderedEvent>)>> {
+    let path = match explicit_path {
+        Some(path) => path.clone(),
+        None => match locate_session_file(sessions_root, session_id)? {
+            Some(path) => path,
+            None => return Ok(None),
+        },
+    };
+
+    let mut offset = 0;
+    let event = prime_session(&path, &mut offset, max_chars, start_at_beginning)?;
+    Ok(Some((SessionState { path, offset }, event)))
+}
+
+fn bootstrap_sessions(
+    session_states: &mut HashMap<String, SessionState>,
+    last_emitted: &mut Option<SessionEvent>,
+    tracked_sessions: &[String],
+    explicit_paths: &HashMap<String, PathBuf>,
+    sessions_root: &Path,
+    max_chars: usize,
+    start_at_beginning: bool,
+    cache_path: &Path,
+) -> Result<()> {
+    let mut newest_event: Option<SessionEvent> = None;
+
+    for session_id in tracked_sessions {
+        if session_states.contains_key(session_id) {
+            continue;
+        }
+        let explicit = explicit_paths.get(session_id);
+        if let Some((state, initial_event)) = initialize_session_state(
+            session_id,
+            explicit,
+            sessions_root,
+            max_chars,
+            start_at_beginning,
+        )? {
+            if let Some(event) = initial_event {
+                newest_event = select_newer_event(
+                    newest_event,
+                    SessionEvent {
+                        session_id: session_id.clone(),
+                        event,
+                    },
+                );
+            }
+            session_states.insert(session_id.clone(), state);
+        }
+    }
+
+    if let Some(event) = newest_event {
+        emit_payload(&event.event.payload, cache_path)?;
+        *last_emitted = Some(event);
+    }
+
+    Ok(())
+}
+
+fn select_newer_event(
+    current: Option<SessionEvent>,
+    candidate: SessionEvent,
+) -> Option<SessionEvent> {
+    match current {
+        None => Some(candidate),
+        Some(existing) => {
+            if is_newer_timestamp(
+                candidate.event.timestamp.as_ref(),
+                existing.event.timestamp.as_ref(),
+            ) || (candidate.event.timestamp == existing.event.timestamp
+                && candidate.event.payload != existing.event.payload)
+            {
+                Some(candidate)
+            } else {
+                Some(existing)
+            }
+        }
+    }
+}
+
+fn is_newer_timestamp(candidate: Option<&String>, current: Option<&String>) -> bool {
+    match (candidate, current) {
+        (Some(candidate), Some(current)) => candidate > current,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn should_emit(last_emitted: &Option<SessionEvent>, candidate: &SessionEvent) -> bool {
+    match last_emitted {
+        None => true,
+        Some(previous) => {
+            previous.session_id != candidate.session_id
+                || previous.event.timestamp != candidate.event.timestamp
+                || previous.event.payload != candidate.event.payload
+        }
+    }
 }
 
 fn read_new_lines(path: &Path, offset: &mut u64) -> io::Result<Vec<String>> {
@@ -300,9 +486,8 @@ fn prime_session(
     path: &Path,
     offset: &mut u64,
     max_chars: usize,
-    cache_path: &Path,
     start_at_beginning: bool,
-) -> Result<Option<WaybarOutput>> {
+) -> Result<Option<RenderedEvent>> {
     let metadata = match fs::metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -327,7 +512,7 @@ fn prime_session(
         Err(err) => return Err(err.into()),
     };
     let reader = BufReader::new(file);
-    let mut last_payload: Option<WaybarOutput> = None;
+    let mut last_event: Option<RenderedEvent> = None;
     for line in reader.lines() {
         let line = match line {
             Ok(line) => line,
@@ -340,19 +525,17 @@ fn prime_session(
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(payload) = process_log_line(&line, max_chars)? {
-            last_payload = Some(payload);
+        if let Some(event) = process_log_line(&line, max_chars)? {
+            last_event = Some(event);
         }
     }
 
-    if let Some(payload) = &last_payload {
-        write_payload_to_cache(payload, cache_path)?;
-    }
+    *offset = metadata.len();
 
-    Ok(last_payload)
+    Ok(last_event)
 }
 
-fn process_log_line(line: &str, max_chars: usize) -> Result<Option<WaybarOutput>> {
+fn process_log_line(line: &str, max_chars: usize) -> Result<Option<RenderedEvent>> {
     if line.trim().is_empty() {
         return Ok(None);
     }
@@ -407,11 +590,14 @@ fn process_log_line(line: &str, max_chars: usize) -> Result<Option<WaybarOutput>
     let tooltip = build_tooltip(timestamp.as_deref(), raw_text, &sanitized, &truncated);
     let display_text = phase.clone().unwrap_or_else(|| truncated.clone());
 
-    Ok(Some(WaybarOutput {
-        text: display_text,
-        tooltip,
-        alt: phase,
-        class: classes,
+    Ok(Some(RenderedEvent {
+        payload: WaybarOutput {
+            text: display_text,
+            tooltip,
+            alt: phase,
+            class: classes,
+        },
+        timestamp,
     }))
 }
 
@@ -560,28 +746,25 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::io::Write;
-    use tempfile::{tempdir, NamedTempFile};
+    use tempfile::{NamedTempFile, tempdir};
 
     #[test]
     fn prime_session_returns_none_when_file_missing() -> Result<()> {
         let dir = tempdir()?;
         let session_path = dir.path().join("missing-session.jsonl");
-        let cache_path = dir.path().join("cache.json");
         let mut offset = 42;
 
-        let result = prime_session(&session_path, &mut offset, 120, &cache_path, false)?;
+        let result = prime_session(&session_path, &mut offset, 120, false)?;
 
         assert!(result.is_none());
         assert_eq!(offset, 0);
-        assert!(!cache_path.exists());
         Ok(())
     }
 
     #[test]
-    fn prime_session_reads_last_payload_and_writes_cache() -> Result<()> {
+    fn prime_session_reads_last_payload() -> Result<()> {
         let dir = tempdir()?;
         let session_path = dir.path().join("session.jsonl");
-        let cache_path = dir.path().join("cache.json");
         let mut file = File::create(&session_path)?;
         let payload_one = json!({
             "timestamp": "2025-10-29T12:00:00Z",
@@ -597,15 +780,12 @@ mod tests {
         writeln!(file, "{payload_two}")?;
 
         let mut offset = 0;
-        let result = prime_session(&session_path, &mut offset, 120, &cache_path, false)?;
+        let result = prime_session(&session_path, &mut offset, 120, false)?;
 
         assert!(result.is_some());
-        let payload = result.unwrap();
-        assert_eq!(payload.text, "Second step");
-        assert!(cache_path.exists());
-
-        let cached: WaybarOutput = serde_json::from_str(&fs::read_to_string(cache_path)?)?;
-        assert_eq!(cached.text, "Second step");
+        let event = result.unwrap();
+        assert_eq!(event.payload.text, "Second step");
+        assert_eq!(event.timestamp.as_deref(), Some("2025-10-29T12:01:00Z"));
         Ok(())
     }
 
@@ -621,5 +801,65 @@ mod tests {
         assert_eq!(lines, vec!["line3".to_string()]);
         assert_eq!(offset, fs::metadata(temp.path())?.len());
         Ok(())
+    }
+
+    #[test]
+    fn recent_session_ids_returns_unique_sessions_in_order() -> Result<()> {
+        let dir = tempdir()?;
+        let history_path = dir.path().join("history.jsonl");
+        fs::write(
+            &history_path,
+            r#"
+{"session_id":"alpha"}
+{"session_id":"beta"}
+{"session_id":"alpha"}
+{"session_id":"gamma"}
+"#
+            .trim_start(),
+        )?;
+
+        let ids = recent_session_ids(&history_path, 2)?;
+        assert_eq!(ids, vec!["alpha".to_string(), "gamma".to_string()]);
+
+        let ids_three = recent_session_ids(&history_path, 3)?;
+        assert_eq!(
+            ids_three,
+            vec!["beta".to_string(), "alpha".to_string(), "gamma".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn select_newer_event_prefers_newer_timestamp() {
+        let older = SessionEvent {
+            session_id: "alpha".to_string(),
+            event: RenderedEvent {
+                payload: WaybarOutput {
+                    text: "Old".to_string(),
+                    tooltip: None,
+                    alt: None,
+                    class: vec![],
+                },
+                timestamp: Some("2025-10-29T10:00:00Z".to_string()),
+            },
+        };
+        let newer = SessionEvent {
+            session_id: "beta".to_string(),
+            event: RenderedEvent {
+                payload: WaybarOutput {
+                    text: "New".to_string(),
+                    tooltip: None,
+                    alt: None,
+                    class: vec![],
+                },
+                timestamp: Some("2025-10-29T11:00:00Z".to_string()),
+            },
+        };
+
+        let picked = select_newer_event(Some(older.clone()), newer.clone()).unwrap();
+        assert_eq!(picked.session_id, "beta");
+
+        let unchanged = select_newer_event(Some(newer.clone()), older.clone()).unwrap();
+        assert_eq!(unchanged.session_id, "beta");
     }
 }
