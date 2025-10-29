@@ -3,6 +3,7 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -11,6 +12,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use dirs::home_dir;
 use glob::glob;
+use libc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -52,6 +54,10 @@ struct Args {
     /// Maximum characters to emit for the Waybar label
     #[arg(long, default_value_t = 120)]
     max_chars: usize,
+
+    /// Custom Waybar signal number to emit after each cache refresh (enable with module `signal:`)
+    #[arg(long)]
+    waybar_signal: Option<u8>,
 
     /// Write the most recent payload to the specified cache file
     #[arg(long)]
@@ -118,12 +124,33 @@ impl SessionMeta {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn ignore_realtime_signals() {
+    unsafe {
+        let base = libc::SIGRTMIN();
+        if base <= 0 {
+            return;
+        }
+        for offset in 0..16 {
+            let sig = base + offset;
+            libc::signal(sig, libc::SIG_IGN);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn ignore_realtime_signals() {}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    ignore_realtime_signals();
 
     if let Some(cache_path) = &args.print_cache {
         return print_cache(cache_path);
     }
+
+    let waybar_signal = args.waybar_signal;
 
     let cache_path = args
         .cache_file
@@ -137,7 +164,7 @@ fn main() -> Result<()> {
         .sessions_root
         .unwrap_or(default_sessions_root().context("Unable to determine default sessions path")?);
 
-    let poll_interval = Duration::from_millis(args.poll_ms);
+    let poll_interval = Duration::from_millis(args.poll_ms.max(10));
     let session_refresh_interval = Duration::from_secs(args.session_refresh_secs);
     let mut last_session_refresh = Instant::now() - session_refresh_interval;
 
@@ -185,6 +212,7 @@ fn main() -> Result<()> {
         args.max_chars,
         args.start_at_beginning,
         cache_path,
+        waybar_signal,
     )?;
 
     loop {
@@ -323,7 +351,7 @@ fn main() -> Result<()> {
 
         if let Some(event) = newest_event {
             if should_emit(&last_emitted, &event) {
-                emit_payload(&event.event.payload, cache_path)?;
+                emit_payload(&event.event, cache_path, waybar_signal)?;
                 last_emitted = Some(event);
             }
         }
@@ -506,6 +534,7 @@ fn bootstrap_sessions(
     max_chars: usize,
     start_at_beginning: bool,
     cache_path: &Path,
+    waybar_signal: Option<u8>,
 ) -> Result<()> {
     let mut newest_event: Option<SessionEvent> = None;
 
@@ -546,7 +575,7 @@ fn bootstrap_sessions(
     }
 
     if let Some(event) = newest_event {
-        emit_payload(&event.event.payload, cache_path)?;
+        emit_payload(&event.event, cache_path, waybar_signal)?;
         *last_emitted = Some(event);
     }
 
@@ -834,10 +863,22 @@ fn build_tooltip(
     }
 }
 
-fn emit_payload(payload: &WaybarOutput, cache_path: &Path) -> Result<()> {
-    write_payload_to_cache(payload, cache_path)?;
+fn emit_payload(event: &RenderedEvent, cache_path: &Path, waybar_signal: Option<u8>) -> Result<()> {
+    write_payload_to_cache(&event.payload, cache_path)?;
+    if let Some(sig) = waybar_signal {
+        notify_waybar(sig);
+    }
     Ok(())
 }
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn notify_waybar(signal: u8) {
+    let arg = format!("-RTMIN+{}", signal);
+    let _ = Command::new("pkill").arg(&arg).arg("waybar").status();
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn notify_waybar(_signal: u8) {}
 
 fn write_payload_to_cache(payload: &WaybarOutput, cache_path: &Path) -> Result<()> {
     if let Some(parent) = cache_path.parent() {
@@ -1013,5 +1054,28 @@ mod tests {
 
         assert!(merged.contains(&"new-session".to_string()));
         assert!(merged.contains(&"old-session".to_string()));
+    }
+
+    #[test]
+    fn emit_payload_writes_payload() -> Result<()> {
+        let dir = tempdir()?;
+        let cache_path = dir.path().join("cache.json");
+        let event = RenderedEvent {
+            payload: WaybarOutput {
+                text: "Hello".to_string(),
+                tooltip: Some("Tooltip".to_string()),
+                alt: Some("phase".to_string()),
+                class: vec!["codex".to_string()],
+            },
+            timestamp: None,
+        };
+
+        emit_payload(&event, &cache_path, None)?;
+
+        let written = fs::read_to_string(&cache_path)?;
+        let parsed: Value = serde_json::from_str(written.trim())?;
+        assert_eq!(parsed["text"].as_str(), Some("Hello"));
+        assert_eq!(parsed["tooltip"].as_str(), Some("Tooltip"));
+        Ok(())
     }
 }

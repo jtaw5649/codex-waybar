@@ -6,7 +6,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/codex-waybar --cache-file %h/.cache/codex-waybar/latest.json --max-chars 110 --session-window 6 --poll-ms 100
+ExecStart=%h/.local/bin/codex-waybar --cache-file %h/.cache/codex-waybar/latest.json --max-chars 110 --session-window 6 --poll-ms 100 --waybar-signal 15
 Restart=on-failure
 RestartSec=0.3
 Environment=RUST_LOG=info
