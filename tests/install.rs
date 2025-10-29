@@ -33,6 +33,39 @@ fn install_creates_waybar_backup() -> TestResult {
         fs::set_permissions(&binary_path, perms)?;
     }
 
+    let release_staging = temp.path().join("release");
+    fs::create_dir_all(&release_staging)?;
+    fs::write(release_staging.join("codex-waybar"), fs::read(&binary_path)?)?;
+    fs::copy(repo_root.join("README.md"), release_staging.join("README.md"))?;
+    let release_examples = release_staging.join("examples");
+    fs::create_dir_all(&release_examples)?;
+    for entry in fs::read_dir(repo_root.join("examples"))? {
+        let entry = entry?;
+        fs::copy(entry.path(), release_examples.join(entry.file_name()))?;
+    }
+    let release_systemd = release_staging.join("systemd");
+    fs::create_dir_all(&release_systemd)?;
+    if let Ok(_) = fs::metadata(repo_root.join("systemd/codex-waybar.service")) {
+        fs::copy(
+            repo_root.join("systemd/codex-waybar.service"),
+            release_systemd.join("codex-waybar.service"),
+        )?;
+    }
+
+    let release_archive = temp.path().join("codex-waybar-release.tar.gz");
+    std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&release_archive)
+        .arg("-C")
+        .arg(&release_staging)
+        .arg(".")
+        .status()
+        .map_err(|e| format!("failed to create release archive: {}", e))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "tar command failed".to_string())
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+
     let output = std::process::Command::new("/usr/bin/env")
         .current_dir(repo_root)
         .arg("bash")
@@ -48,6 +81,7 @@ fn install_creates_waybar_backup() -> TestResult {
         .env("CODEX_WAYBAR_SKIP_MESON", "1")
         .env("CODEX_WAYBAR_SKIP_SYSTEMD", "1")
         .env("CODEX_WAYBAR_SKIP_WAYBAR_RESTART", "1")
+        .env("CODEX_WAYBAR_RELEASE_FILE", &release_archive)
         .output()
         .map_err(|e| format!("failed to run install.sh: {}", e))?;
 

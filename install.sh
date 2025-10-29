@@ -5,6 +5,12 @@ REPO_URL=${REPO_URL:-"https://github.com/jtaw5649/codex-waybar.git"}
 TMP_REPO=""
 INSTALL_SYSTEMD=1
 
+RELEASE_OWNER=${CODEX_WAYBAR_RELEASE_OWNER:-jtaw5649}
+RELEASE_REPO=${CODEX_WAYBAR_RELEASE_REPO:-codex-waybar}
+RELEASE_TAG=${CODEX_WAYBAR_RELEASE_TAG:-latest}
+RELEASE_OVERRIDE_FILE=${CODEX_WAYBAR_RELEASE_FILE:-}
+USE_RELEASE=${CODEX_WAYBAR_RELEASE_FETCH:-1}
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
@@ -28,6 +34,10 @@ SHARE_DIR="${SHARE_DIR:-}"
 SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
 WAYBAR_CONFIG_DIR="${WAYBAR_CONFIG_DIR:-${HOME}/.config/waybar}"
 WAYBAR_BACKUP_ROOT="${WAYBAR_BACKUP_ROOT:-}"
+SKIP_BUILD="${CODEX_WAYBAR_SKIP_BUILD:-0}"
+SKIP_MESON="${CODEX_WAYBAR_SKIP_MESON:-0}"
+SKIP_SYSTEMD="${CODEX_WAYBAR_SKIP_SYSTEMD:-0}"
+SKIP_WAYBAR_RESTART="${CODEX_WAYBAR_SKIP_WAYBAR_RESTART:-0}"
 SKIP_BUILD="${CODEX_WAYBAR_SKIP_BUILD:-0}"
 SKIP_MESON="${CODEX_WAYBAR_SKIP_MESON:-0}"
 SKIP_SYSTEMD="${CODEX_WAYBAR_SKIP_SYSTEMD:-0}"
@@ -88,6 +98,115 @@ require() {
   fi
 }
 
+detect_target() {
+  local arch
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64)
+      echo "x86_64-unknown-linux-gnu"
+      ;;
+    aarch64|arm64)
+      echo "aarch64-unknown-linux-gnu"
+      ;;
+    *)
+      echo "Unsupported architecture: ${arch}" >&2
+      return 1
+      ;;
+  esac
+}
+
+install_from_release() {
+  local archive="$1"
+  local tmp_archive=""
+
+  if [[ -z "${archive}" ]]; then
+    local target
+    target="$(detect_target)" || return 1
+    require curl
+    require tar
+
+    local api_url
+    if [[ "${RELEASE_TAG}" == "latest" ]]; then
+      api_url="https://api.github.com/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/latest"
+    else
+      api_url="https://api.github.com/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
+    fi
+
+    echo "==> Searching release assets for ${target}"
+    local download_url
+    download_url="$(curl -fsSL "${api_url}" | grep -o "\"browser_download_url\": \"[^\"]*codex-waybar-${target}\.tar\.gz\"" | head -n1 | sed 's/.*"browser_download_url": "//;s/"$//')"
+    if [[ -z "${download_url}" ]]; then
+      echo "No release asset found for target ${target}" >&2
+      return 1
+    fi
+
+    tmp_archive="$(mktemp)"
+    echo "==> Downloading ${download_url}"
+    if ! curl -fsSL "${download_url}" -o "${tmp_archive}"; then
+      echo "Failed to download release asset" >&2
+      rm -f "${tmp_archive}"
+      return 1
+    fi
+    archive="${tmp_archive}"
+  else
+    if [[ ! -f "${archive}" ]]; then
+      echo "Release override file ${archive} not found" >&2
+      return 1
+    fi
+  fi
+
+  require tar
+  local extract_dir
+  extract_dir="$(mktemp -d)"
+  if ! tar -xzf "${archive}" -C "${extract_dir}"; then
+    echo "Failed to extract release archive" >&2
+    rm -rf "${extract_dir}" "${tmp_archive}"
+    return 1
+  fi
+
+  local root
+  root="$(find "${extract_dir}" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  if [[ -z "${root}" ]]; then
+    root="${extract_dir}"
+  fi
+
+  local binary_source=""
+  if [[ -f "${root}/codex-waybar" ]]; then
+    binary_source="${root}/codex-waybar"
+  elif [[ -f "${root}/bin/codex-waybar" ]]; then
+    binary_source="${root}/bin/codex-waybar"
+  fi
+
+  if [[ -z "${binary_source}" ]]; then
+    echo "Release archive missing codex-waybar binary" >&2
+    rm -rf "${extract_dir}" "${tmp_archive}"
+    return 1
+  fi
+
+  echo "==> Installing prebuilt codex-waybar"
+  mkdir -p "${BIN_DIR}"
+  install -m 755 "${binary_source}" "${BIN_DIR}/codex-waybar"
+
+  if [[ -d "${root}/examples" ]]; then
+    mkdir -p "${SHARE_DIR}/examples"
+    install -m 644 "${root}/examples"/* "${SHARE_DIR}/examples/" 2>/dev/null || true
+  fi
+
+  if [[ -f "${root}/README.md" ]]; then
+    mkdir -p "${SHARE_DIR}"
+    install -m 644 "${root}/README.md" "${SHARE_DIR}/README.md"
+  fi
+
+  if [[ -d "${root}/systemd" ]]; then
+    mkdir -p "${SHARE_DIR}/systemd"
+    cp -f "${root}/systemd/codex-waybar.service" "${SHARE_DIR}/systemd/" 2>/dev/null || true
+  fi
+
+  rm -rf "${extract_dir}" "${tmp_archive}"
+  echo "==> Release installation complete"
+  return 0
+}
+
 resolve_repo_root() {
   # 1. Script executed from file path
   if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "stdin" ]]; then
@@ -120,6 +239,16 @@ resolve_repo_root() {
 }
 
 REPO_ROOT="$(resolve_repo_root)"
+
+DID_RELEASE=0
+if [[ "${USE_RELEASE}" == "1" ]]; then
+  if install_from_release "${RELEASE_OVERRIDE_FILE}"; then
+    DID_RELEASE=1
+    SKIP_BUILD="1"
+  else
+    echo "==> Release artifacts unavailable; falling back to source build"
+  fi
+fi
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then
   require cargo

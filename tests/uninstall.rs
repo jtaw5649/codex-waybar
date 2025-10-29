@@ -101,18 +101,19 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
 
     let run_uninstall =
         |prefix: &Path, bin_dir: &Path, share_dir: &Path, systemd_dir: &Path| -> TestResult {
-            let mut cmd = Command::new("scripts/uninstall.sh");
-            let output = cmd
-                .current_dir(repo_root)
-                .env("PREFIX", prefix)
-                .env("BIN_DIR", bin_dir)
-                .env("SHARE_DIR", share_dir)
-                .env("SYSTEMD_USER_DIR", systemd_dir)
-                .env("SYSTEMCTL_LOG", &systemctl_log)
-                .env("WAYBAR_LOG", &waybar_log)
-                .env("PKILL_LOG", &pkill_log)
-                .env("PATH", &path_env)
-                .output();
+        let mut cmd = Command::new("scripts/uninstall.sh");
+        let output = cmd
+            .current_dir(repo_root)
+            .env("PREFIX", prefix)
+            .env("BIN_DIR", bin_dir)
+            .env("SHARE_DIR", share_dir)
+            .env("SYSTEMD_USER_DIR", systemd_dir)
+            .env("SYSTEMCTL_LOG", &systemctl_log)
+            .env("WAYBAR_LOG", &waybar_log)
+            .env("PKILL_LOG", &pkill_log)
+            .env("CODEX_WAYBAR_RELEASE_FETCH", "0")
+            .env("PATH", &path_env)
+            .output();
 
             match output {
                 Ok(out) => {
