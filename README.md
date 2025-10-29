@@ -1,4 +1,4 @@
-# Codex Waybar Streamer
+# Codex Waybar
 
 A small Rust utility that tails the local Codex CLI rollout logs and emits
 Waybar-compatible JSON so you can surface Codex's live reasoning directly in
@@ -28,12 +28,33 @@ The optimized binary will be written to `target/release/codex-waybar`.
 
 ## Installation
 
-Use the bundled script to build and install into `~/.local/bin` (override with `PREFIX`, `BIN_DIR`, or `SHARE_DIR` as needed):
+**Recommended (remote installer)**
 
 ```bash
-./scripts/install.sh
-systemctl --user daemon-reload
+curl -fsSL https://github.com/jtaw5649/codex-waybar/raw/main/install.sh | bash
 ```
+
+The script clones the latest sources into a temporary directory, builds the Rust
+daemon and GTK plugin, installs them under `~/.local` by default, copies the
+example configuration files, and drops a user-level systemd unit. Use
+`curl … | bash -s -- --prefix /opt/codex-waybar` (or pass `--no-systemd`) to
+customise the installation.
+
+Prerequisites: `git`, `cargo`, and the GTK build dependencies required by
+`meson` (optional but recommended to install the animated plugin). When the
+installer runs with systemd support enabled it automatically reloads the user
+daemon, enables+starts `codex-waybar.service`, and restarts `waybar` so the new
+module is active immediately.
+
+**Local checkout**
+
+- `git clone https://github.com/jtaw5649/codex-waybar && cd codex-waybar`
+  then run `./install.sh` to build and install from the current workspace.
+- `cargo install --path .` installs just the binary into `~/.cargo/bin`; run the
+  Meson steps in `cffi/codex_shimmer/` manually if you want the animated module.
+- `cargo build --release` followed by copying
+  `target/release/codex-waybar`, the example configs, and the systemd unit to
+  your preferred locations.
 
 ### Uninstalling
 
@@ -41,7 +62,8 @@ systemctl --user daemon-reload
 ./scripts/uninstall.sh
 ```
 
-The uninstall script removes the binary and documentation from the same locations used during installation.
+The uninstall script removes the binary and documentation from the same
+locations used during installation.
 
 ## Runtime options
 
@@ -56,18 +78,51 @@ Run `codex-waybar --help` for the full set of flags. Key arguments:
 | `--poll-ms <ms>` | Tail poll interval (default 250 ms). |
 | `--session-refresh-secs <s>` | How often to re-check history for a new session (default 5 s). |
 | `--max-chars <n>` | Truncate the rendered label to _n_ characters (default 120). |
+| `--waybar-signal <n>` | Send `SIGRTMIN+n` to Waybar after each cache update (match the module’s `signal` field). |
 | `--start-at-beginning` | Replay the entire log on startup (default: tail new entries only). |
 | `--cache-file <path>` | Write the most recent payload to a JSON file (overwritten atomically each update). |
 | `--print-cache <path>` | Print a cache file once and exit — ideal for Waybar polling. |
 
 ## Waybar integration
 
-This project ships in the cache-polling configuration that is proven to work reliably today. `codex-waybar` tails the active Codex session, writes the latest payload atomically to a cache file, and Waybar polls that file once per second.
+The daemon still tails Codex and writes the latest payload atomically to
+`~/.cache/codex-waybar/latest.json`, but the shimmer effect is rendered inside
+Waybar by a dedicated GTK CFFI module. The flow is:
 
-### 1. Launch the cache writer (systemd user service)
+1. `codex-waybar` keeps the cache fresh (one JSON object per line).
+2. The `wb_codex_shimmer` plugin reads the cache, animates the label with Cairo
+   and Pango, and exposes a `GtkDrawingArea` to Waybar.
 
-The installer copies a ready-made user unit to `~/.config/systemd/user/codex-waybar.service`.
-Enable it once and bind it to the graphical session target:
+### 1. Build (or rebuild) the CFFI module
+
+The helper script now compiles the plugin whenever Meson is available, but you
+can do it manually as well:
+
+```bash
+cd cffi/codex_shimmer
+meson setup build --prefix="$HOME/.local"
+meson compile -C build
+meson install -C build   # installs wb_codex_shimmer.so into ~/.local/lib/waybar
+```
+
+Re-run the `meson compile` and `meson install` steps whenever you change the C
+source so Waybar picks up the latest shared object.
+
+### 2. Configure Waybar to load the plugin
+
+Switch the old `custom/codex` block to the CFFI module and wire the Waybar RT
+signal. A ready-to-use snippet lives in
+[`examples/waybar-config-snippet.jsonc`](examples/waybar-config-snippet.jsonc);
+copy it into your `~/.config/waybar/config.jsonc` and adjust paths or tunables
+as needed. The module exposes animation parameters such as `period_ms`,
+`pause_ms`, `width_chars`, `cycles`, `tick_ms`, and the highlight colours.
+`base_alpha` controls the resting text opacity, while `highlight_alpha`
+controls how translucent the shimmer sweep is.
+
+### 3. Launch or restart the cache writer
+
+The installer drops a ready-made user unit in
+`~/.config/systemd/user/codex-waybar.service`:
 
 ```bash
 systemctl --user daemon-reload
@@ -75,9 +130,7 @@ systemctl --user enable --now codex-waybar.service
 systemctl --user add-wants graphical-session.target codex-waybar.service
 ```
 
-Hyprland users should ensure session variables are imported into systemd so the
-service inherits `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, etc. Add the following
-to your Hyprland config:
+Hyprland users should still export session variables into systemd:
 
 ```ini
 # ~/.config/hypr/hyprland.conf
@@ -85,20 +138,26 @@ exec-once = dbus-update-activation-environment --systemd --all
 exec-once = systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_SESSION_TYPE
 ```
 
-Restart the service after changing any CLI flags or upgrading the binary:
+Every time you change CLI flags or rebuild the plugin:
 
 ```bash
 systemctl --user restart codex-waybar.service
 systemctl --user status codex-waybar.service
 ```
 
-### 2. Configure Waybar to poll the cache
-
-See the ready-to-use JSON in `examples/waybar-config-snippet.jsonc`; adjust paths or intervals as needed.
+Finally, set the Waybar module’s `signal` to match the daemon’s
+`--waybar-signal` flag (default `15`) so each cache refresh triggers an immediate
+redraw.
 
 ### Styling
 
-`examples/waybar-style.css` includes the shimmer gradient and phase tint from the reference screenshot—copy or tweak it to match your theme.
+[`examples/waybar-style.css`](examples/waybar-style.css) keeps the module
+transparent so the GTK renderer can drive colours directly; copy or tweak it to
+match your theme.
+
+> **Note:** The Rust daemon now only writes plain-text payloads. The GTK
+> `wb_codex_shimmer` module is required for the animated presentation—there is
+> no built-in markup fallback.
 
 ## Known limitations
 
