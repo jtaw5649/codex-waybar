@@ -1,0 +1,12 @@
+[Unit]
+Description=Codex reasoning cache writer for Waybar
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/codex-waybar --cache-file %h/.cache/codex-waybar/latest.json --max-chars 110
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

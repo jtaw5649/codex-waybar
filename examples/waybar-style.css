@@ -1,0 +1,30 @@
+#custom-codex {
+  color: transparent;
+  background-image: linear-gradient(
+    120deg,
+    rgba(200, 200, 205, 0.2) 0%,
+    rgba(105, 105, 115, 0.75) 45%,
+    rgba(200, 200, 205, 0.2) 90%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: codex-shimmer 2.4s linear infinite;
+}
+
+@keyframes codex-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+#custom-codex.phase-planning {
+  filter: hue-rotate(20deg);
+}
+
+#custom-codex.phase-responding {
+  filter: hue-rotate(-15deg);
+}

@@ -1,0 +1,10 @@
+{
+  "custom/codex": {
+    "exec": "codex-waybar --print-cache ~/.cache/codex-waybar/latest.json",
+    "return-type": "json",
+    "format": "{text}",
+    "tooltip": true,
+    "escape": true,
+    "interval": 1
+  }
+}
