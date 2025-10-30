@@ -177,7 +177,19 @@ copy it into your `~/.config/waybar/config.jsonc` and adjust paths or tunables
 as needed. The module exposes animation parameters such as `period_ms`,
 `pause_ms`, `width_chars`, `cycles`, `tick_ms`, and the highlight colours.
 `base_alpha` controls the resting text opacity, while `highlight_alpha`
-controls how translucent the shimmer sweep is.
+controls the strength of the optional highlight. Two additional knobs tune the
+transparency effect itself:
+
+- `mask_scale` (default `3.0`) multiplies the Gaussian sweep when we punch a
+  hole through the glyphs. Increase it to reveal more of the bar background;
+  decrease it if you prefer a subtler cut-out.
+- `overlay_scale` (default `0.0`) re-enables the bright screen-blend overlay. A
+  value of zero leaves the shimmer fully transparent; try `0.3`–`0.6` for a
+  soft glow.
+
+When `base_color` is omitted the plugin inherits Waybar’s foreground colour, so
+your theme continues to drive the resting text tone while the mask/overlay
+settings dictate the shimmer.
 
 ### 3. Launch or restart the cache writer
 
