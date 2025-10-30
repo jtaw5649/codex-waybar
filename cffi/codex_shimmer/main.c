@@ -403,6 +403,17 @@ static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data) {
   pango_cairo_show_layout(cr, layout);
   cairo_restore(cr);
 
+  double shadow_dx = MAX(layout_width_px * 0.02, 1.0);
+  double shadow_dy = MAX(layout_height_px * 0.18, 1.5);
+  GdkRGBA shadow_rgba = {.red = 0.05, .green = 0.05, .blue = 0.08, .alpha = 0.28};
+
+  cairo_save(cr);
+  cairo_translate(cr, x + shadow_dx, y + shadow_dy);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+  gdk_cairo_set_source_rgba(cr, &shadow_rgba);
+  pango_cairo_show_layout(cr, layout);
+  cairo_restore(cr);
+
   double elapsed_ms = (g_get_monotonic_time() - inst->start_time_us) / 1000.0;
   double total_cycle = inst->period_ms + inst->pause_ms;
   double cycle_pos = fmod(elapsed_ms, total_cycle);
