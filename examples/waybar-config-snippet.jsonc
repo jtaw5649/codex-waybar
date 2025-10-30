@@ -5,12 +5,13 @@
     "cache_path": "~/.cache/codex-shimmer/latest.json",
     "period_ms": 1600,
     "pause_ms": 500,
-    "base_alpha": 0.35,
+    "base_alpha": 1.0,
     "width_chars": 4.0,
     "cycles": 1.0,
     "tick_ms": 33,
-    "base_color": "#C7D3FF",
     "highlight_color": "#FFFFFF",
-    "highlight_alpha": 0.35
+    "highlight_alpha": 0.35,
+    "mask_scale": 3.0,
+    "overlay_scale": 0.0
   }
 }

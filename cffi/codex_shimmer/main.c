@@ -29,10 +29,14 @@ typedef struct {
   double pause_ms;
   double highlight_alpha;
   double base_alpha;
+  double mask_scale;
+  double overlay_scale;
 
   guint timeout_id;
   GFileMonitor *monitor;
   guint64 start_time_us;
+
+  gboolean base_color_overridden;
 } CodexShimmer;
 
 static gboolean animation_tick(gpointer user_data);
@@ -150,10 +154,13 @@ void *wbcffi_init(const wbcffi_init_info *init_info, const wbcffi_config_entry *
   inst->pause_ms = 500.0;
   inst->highlight_alpha = 0.35;
   inst->base_alpha = 1.0;
+  inst->mask_scale = 3.0;
+  inst->overlay_scale = 0.0;
   inst->style_classes = g_ptr_array_new_with_free_func(g_free);
   gdk_rgba_parse(&inst->base_rgba, "#C7D3FF");
   gdk_rgba_parse(&inst->highlight_rgba, "#FFFFFF");
   inst->highlight_rgba.alpha = inst->highlight_alpha;
+  inst->base_color_overridden = FALSE;
 
   const gchar *cfg;
   JsonNode *node;
@@ -226,6 +233,7 @@ void *wbcffi_init(const wbcffi_init_info *init_info, const wbcffi_config_entry *
     node = parse_json_value(cfg);
     if (json_node_is_string(node)) {
       gdk_rgba_parse(&inst->base_rgba, json_node_get_string(node));
+      inst->base_color_overridden = TRUE;
     }
     if (node)
       json_node_free(node);
@@ -253,6 +261,22 @@ void *wbcffi_init(const wbcffi_init_info *init_info, const wbcffi_config_entry *
   if (cfg) {
     node = parse_json_value(cfg);
     inst->base_alpha = CLAMP(json_node_get_double_or(node, inst->base_alpha), 0.0, 1.0);
+    if (node)
+      json_node_free(node);
+  }
+
+  cfg = config_lookup(config_entries, config_entries_len, "mask_scale");
+  if (cfg) {
+    node = parse_json_value(cfg);
+    inst->mask_scale = CLAMP(json_node_get_double_or(node, inst->mask_scale), 0.0, 10.0);
+    if (node)
+      json_node_free(node);
+  }
+
+  cfg = config_lookup(config_entries, config_entries_len, "overlay_scale");
+  if (cfg) {
+    node = parse_json_value(cfg);
+    inst->overlay_scale = CLAMP(json_node_get_double_or(node, inst->overlay_scale), 0.0, 5.0);
     if (node)
       json_node_free(node);
   }
@@ -340,6 +364,16 @@ static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data) {
   if (!inst->text_plain)
     return FALSE;
 
+  if (!inst->base_color_overridden) {
+    GtkStyleContext *ctx = gtk_widget_get_style_context(widget);
+    GtkStateFlags state = gtk_widget_get_state_flags(widget);
+    GdkRGBA css_color = {0};
+    gtk_style_context_get_color(ctx, state, &css_color);
+    inst->base_rgba = css_color;
+  }
+  inst->base_rgba.alpha = inst->base_alpha;
+  inst->highlight_rgba.alpha = inst->highlight_alpha;
+
   GtkAllocation alloc;
   gtk_widget_get_allocation(widget, &alloc);
 
@@ -396,29 +430,50 @@ static gboolean on_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data) {
     gradient_end = gradient_start + 1.0;
   }
 
-  cairo_pattern_t *pattern = cairo_pattern_create_linear(gradient_start, 0.0, gradient_end, 0.0);
+  cairo_pattern_t *mask_pattern = cairo_pattern_create_linear(gradient_start, 0.0, gradient_end, 0.0);
+  cairo_pattern_set_extend(mask_pattern, CAIRO_EXTEND_PAD);
+  cairo_pattern_t *overlay_pattern = NULL;
+  if (inst->overlay_scale > 0.0) {
+    overlay_pattern = cairo_pattern_create_linear(gradient_start, 0.0, gradient_end, 0.0);
+    cairo_pattern_set_extend(overlay_pattern, CAIRO_EXTEND_PAD);
+  }
+
   int steps = 96;
   for (int i = 0; i <= steps; ++i) {
     double offset = (double)i / steps;
     double px = gradient_start + offset * (gradient_end - gradient_start);
     double delta = (px - center_px) / width_px;
     double gaussian = exp(-0.5 * delta * delta);
-    double alpha = inst->highlight_alpha * envelope * gaussian;
-    alpha = CLAMP(alpha, 0.0, 1.0);
-    cairo_pattern_add_color_stop_rgba(pattern, offset, inst->highlight_rgba.red,
-                                      inst->highlight_rgba.green, inst->highlight_rgba.blue,
-                                      alpha);
+    double mask_alpha = CLAMP(gaussian * inst->mask_scale, 0.0, 1.0);
+    mask_alpha *= envelope;
+    cairo_pattern_add_color_stop_rgba(mask_pattern, offset, 0.0, 0.0, 0.0, mask_alpha);
+
+    if (overlay_pattern) {
+      double overlay_alpha = inst->highlight_alpha * envelope * gaussian * inst->overlay_scale;
+      overlay_alpha = CLAMP(overlay_alpha, 0.0, 1.0);
+      cairo_pattern_add_color_stop_rgba(overlay_pattern, offset, inst->highlight_rgba.red,
+                                        inst->highlight_rgba.green, inst->highlight_rgba.blue,
+                                        overlay_alpha);
+    }
   }
 
   cairo_save(cr);
   cairo_translate(cr, x, y);
   pango_cairo_layout_path(cr, layout);
   cairo_clip(cr);
-  cairo_set_operator(cr, CAIRO_OPERATOR_SCREEN);
-  cairo_set_source(cr, pattern);
-  cairo_paint(cr);
+
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_mask(cr, mask_pattern);
+  cairo_pattern_destroy(mask_pattern);
+
+  if (overlay_pattern) {
+    cairo_set_operator(cr, CAIRO_OPERATOR_SCREEN);
+    cairo_set_source(cr, overlay_pattern);
+    cairo_paint(cr);
+    cairo_pattern_destroy(overlay_pattern);
+  }
+
   cairo_restore(cr);
-  cairo_pattern_destroy(pattern);
 
   g_object_unref(layout);
   return TRUE;
