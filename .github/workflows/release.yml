@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-release:
     runs-on: ubuntu-latest
@@ -22,22 +25,33 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build binary
+      - name: Build codex-waybar
         run: cargo build --release
 
-      - name: Package release artifact
+      - name: Build Waybar CFFI plugin
         run: |
-          mkdir -p dist/package/examples
+          cd cffi/codex_shimmer
+          meson setup build --prefix "${GITHUB_WORKSPACE}/dist/package"
+          meson compile -C build
+          meson install -C build
+
+      - name: Stage release package
+        run: |
+          mkdir -p dist/package/examples dist/package/systemd
           cp target/release/codex-waybar dist/package/
           cp README.md dist/package/
           cp -r examples/. dist/package/examples/
-          mkdir -p dist/package/systemd
           cp systemd/codex-waybar.service dist/package/systemd/
+
+      - name: Create archive
+        run: |
+          mkdir -p dist
           tar -czf dist/codex-waybar-x86_64-unknown-linux-gnu.tar.gz -C dist/package .
 
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
           files: dist/codex-waybar-x86_64-unknown-linux-gnu.tar.gz
+          overwrite: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

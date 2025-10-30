@@ -202,6 +202,15 @@ install_from_release() {
     cp -f "${root}/systemd/codex-waybar.service" "${SHARE_DIR}/systemd/" 2>/dev/null || true
   fi
 
+  for candidate in "lib/waybar/wb_codex_shimmer.so" "lib64/waybar/wb_codex_shimmer.so"; do
+    if [[ -f "${root}/${candidate}" ]]; then
+      local target_dir
+      target_dir="${PREFIX}/$(dirname "${candidate}")"
+      mkdir -p "${target_dir}"
+      install -m 755 "${root}/${candidate}" "${target_dir}/$(basename "${candidate}")"
+    fi
+  done
+
   rm -rf "${extract_dir}" "${tmp_archive}"
   echo "==> Release installation complete"
   return 0

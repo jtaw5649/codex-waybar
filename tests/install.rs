@@ -52,6 +52,10 @@ fn install_creates_waybar_backup() -> TestResult {
         )?;
     }
 
+    let lib_dir = release_staging.join("lib/waybar");
+    fs::create_dir_all(&lib_dir)?;
+    fs::write(lib_dir.join("wb_codex_shimmer.so"), b"plugin")?;
+
     let release_archive = temp.path().join("codex-waybar-release.tar.gz");
     std::process::Command::new("tar")
         .arg("-czf")
