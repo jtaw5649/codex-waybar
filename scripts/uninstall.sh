@@ -3,19 +3,22 @@ set -euo pipefail
 
 : "${PREFIX:=${HOME}/.local}"
 : "${BIN_DIR:=${PREFIX}/bin}"
-: "${SHARE_DIR:=${PREFIX}/share/codex-waybar}"
+: "${SHARE_DIR:=${PREFIX}/share/codex-shimmer}"
 : "${SYSTEMD_USER_DIR:=${HOME}/.config/systemd/user}"
 
-BIN_PATH="${BIN_DIR}/codex-waybar"
+BIN_PATH="${BIN_DIR}/codex-shimmer"
+LEGACY_BIN_PATH="${BIN_DIR}/codex-waybar"
 LIB_PATHS=(
   "${LIB_WAYBAR_DIR:-${PREFIX}/lib/waybar/wb_codex_shimmer.so}"
   "${LIB64_WAYBAR_DIR:-${PREFIX}/lib64/waybar/wb_codex_shimmer.so}"
 )
-SERVICE_PATH="${SYSTEMD_USER_DIR}/codex-waybar.service"
+SERVICE_PATH="${SYSTEMD_USER_DIR}/codex-shimmer.service"
+LEGACY_SERVICE_PATH="${SYSTEMD_USER_DIR}/codex-waybar.service"
 README_PATH="${SHARE_DIR}/README.md"
 EXAMPLES_DIR="${SHARE_DIR}/examples"
+LEGACY_SHARE_DIR="${PREFIX}/share/codex-waybar"
 EXAMPLE_FILES=(
-  "codex-waybar.service"
+  "codex-shimmer.service"
   "waybar-config-snippet.jsonc"
   "waybar-style.css"
 )
@@ -42,6 +45,7 @@ remove_directory_if_empty() {
 }
 
 remove_file "${BIN_PATH}"
+remove_file "${LEGACY_BIN_PATH}"
 
 if [[ -d "${SHARE_DIR}" ]]; then
   remove_file "${README_PATH}"
@@ -54,6 +58,10 @@ if [[ -d "${SHARE_DIR}" ]]; then
   remove_directory_if_empty "${SHARE_DIR}"
 else
   echo "Skipping shared assets; ${SHARE_DIR} not found."
+fi
+
+if [[ -d "${LEGACY_SHARE_DIR}" && "${LEGACY_SHARE_DIR}" != "${SHARE_DIR}" ]]; then
+  remove_directory_if_empty "${LEGACY_SHARE_DIR}"
 fi
 
 for lib_path in "${LIB_PATHS[@]}"; do
@@ -69,8 +77,8 @@ systemctl_available() {
 if [[ -f "${SERVICE_PATH}" ]]; then
   echo "==> Removing user systemd unit ${SERVICE_PATH}"
   if systemctl_available; then
-    systemctl --user stop codex-waybar.service || true
-    systemctl --user disable codex-waybar.service || true
+    systemctl --user stop codex-shimmer.service || true
+    systemctl --user disable codex-shimmer.service || true
   fi
   rm -f "${SERVICE_PATH}"
   if systemctl_available; then
@@ -79,14 +87,23 @@ if [[ -f "${SERVICE_PATH}" ]]; then
 else
   echo "Skipping systemd unit; ${SERVICE_PATH} not found."
   if systemctl_available; then
-    systemctl --user disable codex-waybar.service 2>/dev/null || true
+    systemctl --user disable codex-shimmer.service 2>/dev/null || true
     systemctl --user daemon-reload || true
   fi
 fi
 
+if [[ -f "${LEGACY_SERVICE_PATH}" ]]; then
+  echo "==> Removing legacy user systemd unit ${LEGACY_SERVICE_PATH}"
+  if systemctl_available; then
+    systemctl --user stop codex-waybar.service 2>/dev/null || true
+    systemctl --user disable codex-waybar.service 2>/dev/null || true
+  fi
+  rm -f "${LEGACY_SERVICE_PATH}"
+fi
+
 restart_waybar() {
   if command -v pkill >/dev/null 2>&1; then
-    pkill waybar >/dev/null 2>&1 || true
+    pkill -x waybar >/dev/null 2>&1 || true
   else
     echo "pkill not available; skipping Waybar stop."
   fi
@@ -101,4 +118,4 @@ restart_waybar() {
 
 restart_waybar
 
-echo "codex-waybar has been uninstalled."
+echo "codex-shimmer has been uninstalled."

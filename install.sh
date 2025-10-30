@@ -5,11 +5,11 @@ REPO_URL=${REPO_URL:-"https://github.com/jtaw5649/codex-waybar.git"}
 TMP_REPO=""
 INSTALL_SYSTEMD=1
 
-RELEASE_OWNER=${CODEX_WAYBAR_RELEASE_OWNER:-jtaw5649}
-RELEASE_REPO=${CODEX_WAYBAR_RELEASE_REPO:-codex-waybar}
-RELEASE_TAG=${CODEX_WAYBAR_RELEASE_TAG:-latest}
-RELEASE_OVERRIDE_FILE=${CODEX_WAYBAR_RELEASE_FILE:-}
-USE_RELEASE=${CODEX_WAYBAR_RELEASE_FETCH:-1}
+RELEASE_OWNER=${CODEX_SHIMMER_RELEASE_OWNER:-${CODEX_WAYBAR_RELEASE_OWNER:-jtaw5649}}
+RELEASE_REPO=${CODEX_SHIMMER_RELEASE_REPO:-${CODEX_WAYBAR_RELEASE_REPO:-codex-shimmer}}
+RELEASE_TAG=${CODEX_SHIMMER_RELEASE_TAG:-${CODEX_WAYBAR_RELEASE_TAG:-latest}}
+RELEASE_OVERRIDE_FILE=${CODEX_SHIMMER_RELEASE_FILE:-${CODEX_WAYBAR_RELEASE_FILE:-}}
+USE_RELEASE=${CODEX_SHIMMER_RELEASE_FETCH:-${CODEX_WAYBAR_RELEASE_FETCH:-1}}
 
 usage() {
   cat <<'EOF'
@@ -34,14 +34,10 @@ SHARE_DIR="${SHARE_DIR:-}"
 SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
 WAYBAR_CONFIG_DIR="${WAYBAR_CONFIG_DIR:-${HOME}/.config/waybar}"
 WAYBAR_BACKUP_ROOT="${WAYBAR_BACKUP_ROOT:-}"
-SKIP_BUILD="${CODEX_WAYBAR_SKIP_BUILD:-0}"
-SKIP_MESON="${CODEX_WAYBAR_SKIP_MESON:-0}"
-SKIP_SYSTEMD="${CODEX_WAYBAR_SKIP_SYSTEMD:-0}"
-SKIP_WAYBAR_RESTART="${CODEX_WAYBAR_SKIP_WAYBAR_RESTART:-0}"
-SKIP_BUILD="${CODEX_WAYBAR_SKIP_BUILD:-0}"
-SKIP_MESON="${CODEX_WAYBAR_SKIP_MESON:-0}"
-SKIP_SYSTEMD="${CODEX_WAYBAR_SKIP_SYSTEMD:-0}"
-SKIP_WAYBAR_RESTART="${CODEX_WAYBAR_SKIP_WAYBAR_RESTART:-0}"
+SKIP_BUILD="${CODEX_SHIMMER_SKIP_BUILD:-${CODEX_WAYBAR_SKIP_BUILD:-0}}"
+SKIP_MESON="${CODEX_SHIMMER_SKIP_MESON:-${CODEX_WAYBAR_SKIP_MESON:-0}}"
+SKIP_SYSTEMD="${CODEX_SHIMMER_SKIP_SYSTEMD:-${CODEX_WAYBAR_SKIP_SYSTEMD:-0}}"
+SKIP_WAYBAR_RESTART="${CODEX_SHIMMER_SKIP_WAYBAR_RESTART:-${CODEX_WAYBAR_SKIP_WAYBAR_RESTART:-0}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -80,7 +76,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 BIN_DIR="${BIN_DIR:-${PREFIX}/bin}"
-SHARE_DIR="${SHARE_DIR:-${PREFIX}/share/codex-waybar}"
+SHARE_DIR="${SHARE_DIR:-${PREFIX}/share/codex-shimmer}"
 SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"
 WAYBAR_BACKUP_ROOT="${WAYBAR_BACKUP_ROOT:-${SHARE_DIR}/backups}"
 
@@ -133,8 +129,13 @@ install_from_release() {
     fi
 
     echo "==> Searching release assets for ${target}"
+    local release_json
+    release_json="$(curl -fsSL "${api_url}")"
     local download_url
-    download_url="$(curl -fsSL "${api_url}" | grep -o "\"browser_download_url\": \"[^\"]*codex-waybar-${target}\.tar\.gz\"" | head -n1 | sed 's/.*"browser_download_url": "//;s/"$//')"
+    download_url="$(printf '%s' "${release_json}" | grep -o "\"browser_download_url\": \"[^\"]*codex-waybar-${target}\.tar\.gz\"" | head -n1 | sed 's/.*"browser_download_url": "//;s/"$//')"
+    if [[ -z "${download_url}" ]]; then
+      download_url="$(printf '%s' "${release_json}" | grep -o "\"browser_download_url\": \"[^\"]*codex-shimmer-${target}\.tar\.gz\"" | head -n1 | sed 's/.*"browser_download_url": "//;s/"$//')"
+    fi
     if [[ -z "${download_url}" ]]; then
       echo "No release asset found for target ${target}" >&2
       return 1
@@ -171,21 +172,25 @@ install_from_release() {
   fi
 
   local binary_source=""
-  if [[ -f "${root}/codex-waybar" ]]; then
+  if [[ -f "${root}/codex-shimmer" ]]; then
+    binary_source="${root}/codex-shimmer"
+  elif [[ -f "${root}/bin/codex-shimmer" ]]; then
+    binary_source="${root}/bin/codex-shimmer"
+  elif [[ -f "${root}/codex-waybar" ]]; then
     binary_source="${root}/codex-waybar"
   elif [[ -f "${root}/bin/codex-waybar" ]]; then
     binary_source="${root}/bin/codex-waybar"
   fi
 
   if [[ -z "${binary_source}" ]]; then
-    echo "Release archive missing codex-waybar binary" >&2
+    echo "Release archive missing codex-shimmer binary" >&2
     rm -rf "${extract_dir}" "${tmp_archive}"
     return 1
   fi
 
-  echo "==> Installing prebuilt codex-waybar"
+  echo "==> Installing prebuilt codex-shimmer"
   mkdir -p "${BIN_DIR}"
-  install -m 755 "${binary_source}" "${BIN_DIR}/codex-waybar"
+  install -m 755 "${binary_source}" "${BIN_DIR}/codex-shimmer"
 
   if [[ -d "${root}/examples" ]]; then
     mkdir -p "${SHARE_DIR}/examples"
@@ -199,7 +204,11 @@ install_from_release() {
 
   if [[ -d "${root}/systemd" ]]; then
     mkdir -p "${SHARE_DIR}/systemd"
-    cp -f "${root}/systemd/codex-waybar.service" "${SHARE_DIR}/systemd/" 2>/dev/null || true
+    if [[ -f "${root}/systemd/codex-shimmer.service" ]]; then
+      cp -f "${root}/systemd/codex-shimmer.service" "${SHARE_DIR}/systemd/" 2>/dev/null || true
+    elif [[ -f "${root}/systemd/codex-waybar.service" ]]; then
+      cp -f "${root}/systemd/codex-waybar.service" "${SHARE_DIR}/systemd/" 2>/dev/null || true
+    fi
   fi
 
   for candidate in "lib/waybar/wb_codex_shimmer.so" "lib64/waybar/wb_codex_shimmer.so"; do
@@ -266,13 +275,13 @@ fi
 echo "==> Using repository at ${REPO_ROOT}"
 pushd "${REPO_ROOT}" >/dev/null
 
-BIN_SOURCE="${REPO_ROOT}/target/release/codex-waybar"
+BIN_SOURCE="${REPO_ROOT}/target/release/codex-shimmer"
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then
-  echo "==> Building codex-waybar (release profile)"
+  echo "==> Building codex-shimmer (release profile)"
   cargo build --release
 else
-  echo "==> Skipping cargo build (CODEX_WAYBAR_SKIP_BUILD=1)"
+  echo "==> Skipping cargo build (CODEX_SHIMMER_SKIP_BUILD=1)"
 fi
 
 if [[ ! -x "${BIN_SOURCE}" ]]; then
@@ -282,7 +291,11 @@ fi
 
 echo "==> Installing binary to ${BIN_DIR}"
 mkdir -p "${BIN_DIR}"
-install -m 755 "${BIN_SOURCE}" "${BIN_DIR}/codex-waybar"
+install -m 755 "${BIN_SOURCE}" "${BIN_DIR}/codex-shimmer"
+if [[ -f "${BIN_DIR}/codex-waybar" ]]; then
+  echo "==> Removing legacy codex-waybar binary"
+  rm -f "${BIN_DIR}/codex-waybar"
+fi
 
 echo "==> Installing documentation to ${SHARE_DIR}"
 mkdir -p "${SHARE_DIR}"
@@ -321,42 +334,56 @@ if [[ "${SKIP_MESON}" != "1" ]] && command -v meson >/dev/null 2>&1; then
   meson install -C "${BUILD_DIR}"
   popd >/dev/null
 elif [[ "${SKIP_MESON}" == "1" ]]; then
-  echo "==> Skipping Meson build (CODEX_WAYBAR_SKIP_MESON=1)"
+  echo "==> Skipping Meson build (CODEX_SHIMMER_SKIP_MESON=1)"
 else
   echo "==> Meson not found; skipping CFFI module build. Install meson to build wb_codex_shimmer." >&2
 fi
 
-if [[ ${INSTALL_SYSTEMD} -eq 1 && "${SKIP_SYSTEMD}" != "1" && -f "${REPO_ROOT}/systemd/codex-waybar.service" ]]; then
+if [[ ${INSTALL_SYSTEMD} -eq 1 && "${SKIP_SYSTEMD}" != "1" ]]; then
   echo "==> Installing user systemd unit"
   mkdir -p "${SYSTEMD_USER_DIR}"
-  install -m 644 "${REPO_ROOT}/systemd/codex-waybar.service" "${SYSTEMD_USER_DIR}/codex-waybar.service"
-  echo "==> Reloading user systemd daemon"
-  systemctl --user daemon-reload
-  echo "==> Enabling and restarting codex-waybar.service"
-  systemctl --user enable --now codex-waybar.service
-  echo "==> Current service status"
-  systemctl --user status codex-waybar.service --no-pager
+  local_service_src=""
+  if [[ -f "${REPO_ROOT}/systemd/codex-shimmer.service" ]]; then
+    local_service_src="${REPO_ROOT}/systemd/codex-shimmer.service"
+  elif [[ -f "${REPO_ROOT}/systemd/codex-waybar.service" ]]; then
+    local_service_src="${REPO_ROOT}/systemd/codex-waybar.service"
+  fi
+  if [[ -n "${local_service_src}" ]]; then
+    install -m 644 "${local_service_src}" "${SYSTEMD_USER_DIR}/codex-shimmer.service"
+    if [[ -f "${SYSTEMD_USER_DIR}/codex-waybar.service" ]]; then
+      systemctl --user disable codex-waybar.service 2>/dev/null || true
+      rm -f "${SYSTEMD_USER_DIR}/codex-waybar.service"
+    fi
+    echo "==> Reloading user systemd daemon"
+    systemctl --user daemon-reload
+    echo "==> Enabling and restarting codex-shimmer.service"
+    systemctl --user enable --now codex-shimmer.service
+    echo "==> Current service status"
+    systemctl --user status codex-shimmer.service --no-pager
+  else
+    echo "==> No systemd unit file found; skipping user service installation"
+  fi
 elif [[ ${INSTALL_SYSTEMD} -eq 1 && "${SKIP_SYSTEMD}" == "1" ]]; then
-  echo "==> Skipping systemd setup (CODEX_WAYBAR_SKIP_SYSTEMD=1)"
+  echo "==> Skipping systemd setup (CODEX_SHIMMER_SKIP_SYSTEMD=1)"
 else
   echo "==> Skipping systemd setup"
 fi
 
 if [[ "${SKIP_WAYBAR_RESTART}" != "1" ]] && command -v waybar >/dev/null 2>&1; then
   echo "==> Restarting Waybar"
-  pkill waybar || true
+  pkill -x waybar || true
   (waybar >/dev/null 2>&1 & disown) || true
 elif [[ "${SKIP_WAYBAR_RESTART}" == "1" ]]; then
-  echo "==> Skipping Waybar restart (CODEX_WAYBAR_SKIP_WAYBAR_RESTART=1)"
+  echo "==> Skipping Waybar restart (CODEX_SHIMMER_SKIP_WAYBAR_RESTART=1)"
 else
   echo "==> Waybar executable not found on PATH; skipping Waybar restart"
 fi
 
 popd >/dev/null
 
-echo "codex-waybar installed successfully."
-echo "Binary location : ${BIN_DIR}/codex-waybar"
+echo "codex-shimmer installed successfully."
+echo "Binary location : ${BIN_DIR}/codex-shimmer"
 echo "Docs/examples   : ${SHARE_DIR}"
-if [[ ${INSTALL_SYSTEMD} -eq 1 && -f "${SYSTEMD_USER_DIR}/codex-waybar.service" ]]; then
-  echo "Systemd unit    : ${SYSTEMD_USER_DIR}/codex-waybar.service"
+if [[ ${INSTALL_SYSTEMD} -eq 1 && -f "${SYSTEMD_USER_DIR}/codex-shimmer.service" ]]; then
+  echo "Systemd unit    : ${SYSTEMD_USER_DIR}/codex-shimmer.service"
 fi

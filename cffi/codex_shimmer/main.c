@@ -48,7 +48,7 @@ const size_t wbcffi_version = 2;
 
 static gchar *default_cache_path(void) {
   const gchar *home = g_get_home_dir();
-  return g_build_filename(home, ".cache", "codex-waybar", "latest.json", NULL);
+  return g_build_filename(home, ".cache", "codex-shimmer", "latest.json", NULL);
 }
 
 static JsonNode *parse_json_value(const char *value) {

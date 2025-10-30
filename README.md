@@ -7,6 +7,12 @@ active session, streams `agent_reasoning` events in real time, and can now
 persist the latest payload to a cache file so Waybar (or any other consumer)
 can poll it safely.
 
+> **Rename notice:** the repository remains **codex-waybar**, but the installed
+> daemon and Waybar module ship as **codex-shimmer** to avoid conflicts with
+> `pkill waybar`. Legacy `CODEX_WAYBAR_*` environment variables still work; new
+> configuration uses the `codex-shimmer` name for binaries, cache paths, and
+> units.
+
 ## Features
 
 - Auto-discovers the newest Codex session by parsing `history.jsonl`.
@@ -18,52 +24,97 @@ can poll it safely.
 - Optionally writes the latest payload to a cache file so multiple consumers
   can poll without keeping a stream running.
 
-## Building
+## Installation
+
+### Remote installer (recommended)
+
+```bash
+curl -fsSL https://github.com/jtaw5649/codex-waybar/raw/master/install.sh | bash
+```
+
+The script first searches for a release asset that matches your architecture.
+When one exists, it downloads the pre-built `codex-shimmer` binary together with
+the GTK shimmer plugin, installs the examples and systemd unit, and then runs
+the usual post-install steps (Waybar backup, systemd reload, Waybar restart). If
+no release archive is available it automatically clones the repository and
+builds everything from source instead. Pass `--prefix /opt/codex-shimmer`
+(or `--no-systemd`) via `curl … | bash -s -- <flags>` to customise the
+deployment.
+
+Prerequisites: `curl` and `tar` for the release path. When the script needs to
+compile from source you will also need `git`, `cargo`, `meson`, and the GTK
+development headers. Every run snapshots your existing Waybar configuration and
+prints the backup location that was created.
+
+#### Apply the example Waybar configuration
+
+The installer never overwrites your Waybar files. Merge the samples it installs
+under `$PREFIX/share/codex-shimmer/`:
+
+1. Copy or merge `$PREFIX/share/codex-shimmer/examples/waybar-config-snippet.jsonc`
+   into `~/.config/waybar/config.jsonc` so Waybar loads the
+   `cffi/codex_shimmer` module (adjust paths if you installed to a non-default
+   prefix).
+2. Append the contents of `$PREFIX/share/codex-shimmer/examples/waybar-style.css`
+   to your Waybar stylesheet; the GTK renderer relies on those rules to keep the
+   shimmer transparent and aligned.
+3. If you skipped the automatic systemd setup, copy
+   `$PREFIX/share/codex-shimmer/systemd/codex-shimmer.service` into
+   `~/.config/systemd/user/` and enable it manually.
+
+### Manual release download
+
+Prefer not to pipe to `bash`? Grab the latest tarball from the
+[Releases](https://github.com/jtaw5649/codex-waybar/releases) page, extract it
+into your preferred prefix, and then follow the steps above to merge the config,
+CSS, and systemd unit.
+
+### Local checkout (development)
+
+Clone the repository when you want to hack on the sources:
+
+```bash
+git clone https://github.com/jtaw5649/codex-waybar
+cd codex-waybar
+```
+
+#### Use the install script
+
+Running `./install.sh` inside the checkout performs the same workflow as the
+remote installer but uses your local sources. It honours `--prefix` and the
+`CODEX_SHIMMER_*` environment overrides (legacy `CODEX_WAYBAR_*` names remain
+supported for compatibility), rebuilds the Rust daemon and CFFI
+module, backs up your Waybar directory, and restarts Waybar by default. After it
+finishes, follow [Apply the example Waybar configuration](#apply-the-example-waybar-configuration)
+to merge the sample config and CSS.
+
+#### Manual build (advanced)
+
+Install just the binary into your Cargo bin directory:
+
+```bash
+cargo install --path .
+```
+
+Or build the optimized binary in place without installing:
 
 ```bash
 cargo build --release
 ```
 
-The optimized binary will be written to `target/release/codex-waybar`.
-
-## Installation
-
-**Remote installer (default behaviour)**
+The resulting executable lives at `target/release/codex-shimmer`. To (re)build
+and install the GTK shimmer plugin manually:
 
 ```bash
-curl -fsSL https://github.com/jtaw5649/codex-waybar/raw/main/install.sh | bash
+cd cffi/codex_shimmer
+meson setup build --prefix="$HOME/.local"
+meson compile -C build
+meson install -C build
 ```
 
-If a matching release artifact exists, the script fetches the pre-built binary
-and Waybar plugin, copies the examples and systemd unit, and performs the same
-post-install steps (backup, systemd reload, Waybar restart). Falling back to a
-source build happens automatically when no release archive is available. Use
-`curl … | bash -s -- --prefix /opt/codex-waybar` (or pass `--no-systemd`) to
-customise the installation.
-
-Prerequisites: `curl` and `tar` for the release path. If the script needs to
-build from source it will also require `git`, `cargo`, and the GTK/meson build
-toolchain. When systemd support is enabled the installer reloads the user
-daemon, enables+starts `codex-waybar.service`, and restarts `waybar` so the new
-module is active immediately.
-
-Prefer a manual download? Grab the latest tarball from the
-[Releases](https://github.com/jtaw5649/codex-waybar/releases) page and unpack
-it into your preferred prefix.
-
-Every run also snapshots your existing Waybar configuration into
-`$PREFIX/share/codex-waybar/backups/waybar-<timestamp>` (override with
-`WAYBAR_BACKUP_ROOT`); the backup path is printed at the end of the install.
-
-**Local checkout**
-
-- `git clone https://github.com/jtaw5649/codex-waybar && cd codex-waybar`
-  then run `./install.sh` to build and install from the current workspace.
-- `cargo install --path .` installs just the binary into `~/.cargo/bin`; run the
-  Meson steps in `cffi/codex_shimmer/` manually if you want the animated module.
-- `cargo build --release` followed by copying
-  `target/release/codex-waybar`, the example configs, and the systemd unit to
-  your preferred locations.
+When you install manually, copy the files under `examples/` into your Waybar
+configuration and drop `systemd/codex-shimmer.service` into
+`~/.config/systemd/user/` if you want systemd to manage the daemon.
 
 ### Uninstalling
 
@@ -76,7 +127,7 @@ locations used during installation.
 
 ## Runtime options
 
-Run `codex-waybar --help` for the full set of flags. Key arguments:
+Run `codex-shimmer --help` for the full set of flags. Key arguments:
 
 | Flag | Description |
 | --- | --- |
@@ -95,10 +146,10 @@ Run `codex-waybar --help` for the full set of flags. Key arguments:
 ## Waybar integration
 
 The daemon still tails Codex and writes the latest payload atomically to
-`~/.cache/codex-waybar/latest.json`, but the shimmer effect is rendered inside
+`~/.cache/codex-shimmer/latest.json`, but the shimmer effect is rendered inside
 Waybar by a dedicated GTK CFFI module. The flow is:
 
-1. `codex-waybar` keeps the cache fresh (one JSON object per line).
+1. `codex-shimmer` keeps the cache fresh (one JSON object per line).
 2. The `wb_codex_shimmer` plugin reads the cache, animates the label with Cairo
    and Pango, and exposes a `GtkDrawingArea` to Waybar.
 
@@ -131,12 +182,12 @@ controls how translucent the shimmer sweep is.
 ### 3. Launch or restart the cache writer
 
 The installer drops a ready-made user unit in
-`~/.config/systemd/user/codex-waybar.service`:
+`~/.config/systemd/user/codex-shimmer.service`:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now codex-waybar.service
-systemctl --user add-wants graphical-session.target codex-waybar.service
+systemctl --user enable --now codex-shimmer.service
+systemctl --user add-wants graphical-session.target codex-shimmer.service
 ```
 
 Hyprland users should still export session variables into systemd:
@@ -150,8 +201,8 @@ exec-once = systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR 
 Every time you change CLI flags or rebuild the plugin:
 
 ```bash
-systemctl --user restart codex-waybar.service
-systemctl --user status codex-waybar.service
+systemctl --user restart codex-shimmer.service
+systemctl --user status codex-shimmer.service
 ```
 
 Finally, set the Waybar module’s `signal` to match the daemon’s

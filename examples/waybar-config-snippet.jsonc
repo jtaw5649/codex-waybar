@@ -2,7 +2,7 @@
   "modules-left": ["cffi/codex_shimmer"],
   "cffi/codex_shimmer": {
     "module_path": "~/.local/lib/waybar/wb_codex_shimmer.so",
-    "cache_path": "~/.cache/codex-waybar/latest.json",
+    "cache_path": "~/.cache/codex-shimmer/latest.json",
     "period_ms": 1600,
     "pause_ms": 500,
     "base_alpha": 0.35,

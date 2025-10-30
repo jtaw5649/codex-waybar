@@ -1,0 +1,14 @@
+[Unit]
+Description=Codex Shimmer Cache Writer
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/codex-shimmer --cache-file %h/.cache/codex-shimmer/latest.json --max-chars 110 --poll-ms 100 --waybar-signal 15
+Restart=on-failure
+RestartSec=0.3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

@@ -13,7 +13,7 @@ fn install_creates_waybar_backup() -> TestResult {
     let home = temp.path().join("home");
     let prefix = temp.path().join("prefix");
     let bin_dir = prefix.join("bin");
-    let share_dir = prefix.join("share/codex-waybar");
+    let share_dir = prefix.join("share/codex-shimmer");
     let backups_root = temp.path().join("backups");
     let systemd_dir = temp.path().join("systemd");
 
@@ -23,7 +23,7 @@ fn install_creates_waybar_backup() -> TestResult {
 
     let target_dir = repo_root.join("target/release");
     fs::create_dir_all(&target_dir)?;
-    let binary_path = target_dir.join("codex-waybar");
+    let binary_path = target_dir.join("codex-shimmer");
     fs::write(&binary_path, b"binary")?;
     #[cfg(unix)]
     {
@@ -35,7 +35,7 @@ fn install_creates_waybar_backup() -> TestResult {
 
     let release_staging = temp.path().join("release");
     fs::create_dir_all(&release_staging)?;
-    fs::write(release_staging.join("codex-waybar"), fs::read(&binary_path)?)?;
+    fs::write(release_staging.join("codex-shimmer"), fs::read(&binary_path)?)?;
     fs::copy(repo_root.join("README.md"), release_staging.join("README.md"))?;
     let release_examples = release_staging.join("examples");
     fs::create_dir_all(&release_examples)?;
@@ -45,10 +45,10 @@ fn install_creates_waybar_backup() -> TestResult {
     }
     let release_systemd = release_staging.join("systemd");
     fs::create_dir_all(&release_systemd)?;
-    if let Ok(_) = fs::metadata(repo_root.join("systemd/codex-waybar.service")) {
+    if let Ok(_) = fs::metadata(repo_root.join("systemd/codex-shimmer.service")) {
         fs::copy(
-            repo_root.join("systemd/codex-waybar.service"),
-            release_systemd.join("codex-waybar.service"),
+            repo_root.join("systemd/codex-shimmer.service"),
+            release_systemd.join("codex-shimmer.service"),
         )?;
     }
 
@@ -56,7 +56,7 @@ fn install_creates_waybar_backup() -> TestResult {
     fs::create_dir_all(&lib_dir)?;
     fs::write(lib_dir.join("wb_codex_shimmer.so"), b"plugin")?;
 
-    let release_archive = temp.path().join("codex-waybar-release.tar.gz");
+    let release_archive = temp.path().join("codex-shimmer-release.tar.gz");
     std::process::Command::new("tar")
         .arg("-czf")
         .arg(&release_archive)
@@ -81,11 +81,11 @@ fn install_creates_waybar_backup() -> TestResult {
         .env("SYSTEMD_USER_DIR", &systemd_dir)
         .env("WAYBAR_CONFIG_DIR", &waybar_config)
         .env("WAYBAR_BACKUP_ROOT", &backups_root)
-        .env("CODEX_WAYBAR_SKIP_BUILD", "1")
-        .env("CODEX_WAYBAR_SKIP_MESON", "1")
-        .env("CODEX_WAYBAR_SKIP_SYSTEMD", "1")
-        .env("CODEX_WAYBAR_SKIP_WAYBAR_RESTART", "1")
-        .env("CODEX_WAYBAR_RELEASE_FILE", &release_archive)
+        .env("CODEX_SHIMMER_SKIP_BUILD", "1")
+        .env("CODEX_SHIMMER_SKIP_MESON", "1")
+        .env("CODEX_SHIMMER_SKIP_SYSTEMD", "1")
+        .env("CODEX_SHIMMER_SKIP_WAYBAR_RESTART", "1")
+        .env("CODEX_SHIMMER_RELEASE_FILE", &release_archive)
         .output()
         .map_err(|e| format!("failed to run install.sh: {}", e))?;
 
@@ -112,11 +112,11 @@ fn install_creates_waybar_backup() -> TestResult {
     );
 
     assert!(
-        bin_dir.join("codex-waybar").exists(),
+        bin_dir.join("codex-shimmer").exists(),
         "binary should remain installed"
     );
     assert!(
-        !systemd_dir.join("codex-waybar.service").exists(),
+        !systemd_dir.join("codex-shimmer.service").exists(),
         "systemd unit should not exist in skip mode"
     );
 

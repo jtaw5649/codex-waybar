@@ -1,0 +1,17 @@
+[Unit]
+Description=Codex Shimmer Cache Writer
+Documentation=https://github.com/jtaw5649/codex-shimmer
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/codex-shimmer --cache-file %h/.cache/codex-shimmer/latest.json --max-chars 110 --session-window 6 --poll-ms 100 --waybar-signal 15
+Restart=on-failure
+RestartSec=0.3
+Environment=RUST_LOG=info
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

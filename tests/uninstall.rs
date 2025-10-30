@@ -26,7 +26,7 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     let temp = TempDir::new()?;
     let prefix = temp.path().join("prefix");
     let bin_dir = prefix.join("bin");
-    let share_dir = prefix.join("share/codex-waybar");
+    let share_dir = prefix.join("share/codex-shimmer");
     let examples_dir = share_dir.join("examples");
     let lib_dir = prefix.join("lib/waybar");
     let lib64_dir = prefix.join("lib64/waybar");
@@ -39,11 +39,12 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     fs::create_dir_all(&lib64_dir)?;
     fs::create_dir_all(&systemd_dir)?;
 
-    fs::write(bin_dir.join("codex-waybar"), b"binary")?;
+    fs::write(bin_dir.join("codex-shimmer"), b"binary")?;
+    fs::write(bin_dir.join("codex-waybar"), b"legacy-binary")?;
     fs::write(share_dir.join("README.md"), b"docs")?;
 
     for sample in [
-        "codex-waybar.service",
+        "codex-shimmer.service",
         "waybar-config-snippet.jsonc",
         "waybar-style.css",
     ] {
@@ -62,8 +63,8 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     fs::write(lib_dir.join("wb_codex_shimmer.so"), b"plugin")?;
     fs::write(lib64_dir.join("wb_codex_shimmer.so"), b"plugin64")?;
 
-    let service_src = repo_root.join("systemd/codex-waybar.service");
-    let service_dest = systemd_dir.join("codex-waybar.service");
+    let service_src = repo_root.join("systemd/codex-shimmer.service");
+    let service_dest = systemd_dir.join("codex-shimmer.service");
     fs::copy(&service_src, &service_dest).unwrap_or_else(|e| {
         panic!(
             "failed to copy {} to {}: {}",
@@ -72,6 +73,8 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
             e
         )
     });
+    let legacy_service_dest = systemd_dir.join("codex-waybar.service");
+    fs::write(&legacy_service_dest, b"[Unit]\nDescription=Legacy service\n")?;
 
     let stubs_dir = temp.path().join("stubs");
     fs::create_dir_all(&stubs_dir)?;
@@ -111,7 +114,7 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
             .env("SYSTEMCTL_LOG", &systemctl_log)
             .env("WAYBAR_LOG", &waybar_log)
             .env("PKILL_LOG", &pkill_log)
-            .env("CODEX_WAYBAR_RELEASE_FETCH", "0")
+            .env("CODEX_SHIMMER_RELEASE_FETCH", "0")
             .env("PATH", &path_env)
             .output();
 
@@ -135,8 +138,12 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     assert!(
-        !bin_dir.join("codex-waybar").exists(),
+        !bin_dir.join("codex-shimmer").exists(),
         "binary should be removed"
+    );
+    assert!(
+        !bin_dir.join("codex-waybar").exists(),
+        "legacy binary should be removed"
     );
     assert!(
         !share_dir.exists(),
@@ -144,9 +151,11 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     );
     assert!(!lib_dir.join("wb_codex_shimmer.so").exists());
     assert!(!lib64_dir.join("wb_codex_shimmer.so").exists());
-    assert!(!systemd_dir.join("codex-waybar.service").exists());
+    assert!(!systemd_dir.join("codex-shimmer.service").exists());
 
     let systemctl_calls = fs::read_to_string(&systemctl_log)?;
+    assert!(systemctl_calls.contains("systemctl --user stop codex-shimmer.service"));
+    assert!(systemctl_calls.contains("systemctl --user disable codex-shimmer.service"));
     assert!(systemctl_calls.contains("systemctl --user stop codex-waybar.service"));
     assert!(systemctl_calls.contains("systemctl --user disable codex-waybar.service"));
     assert!(systemctl_calls.contains("systemctl --user daemon-reload"));
@@ -155,7 +164,7 @@ fn uninstall_removes_installed_artifacts() -> TestResult {
     assert!(waybar_calls.contains("waybar"));
 
     let pkill_calls = fs::read_to_string(&pkill_log)?;
-    assert!(pkill_calls.contains("pkill waybar"));
+    assert!(pkill_calls.contains("pkill -x waybar"));
 
     // Second run should be idempotent and still succeed.
     run_uninstall(&prefix, &bin_dir, &share_dir, &systemd_dir)?;
