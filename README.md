@@ -28,23 +28,28 @@ The optimized binary will be written to `target/release/codex-waybar`.
 
 ## Installation
 
-**Recommended (remote installer)**
+**Remote installer (default behaviour)**
 
 ```bash
 curl -fsSL https://github.com/jtaw5649/codex-waybar/raw/main/install.sh | bash
 ```
 
-The script clones the latest sources into a temporary directory, builds the Rust
-daemon and GTK plugin, installs them under `~/.local` by default, copies the
-example configuration files, and drops a user-level systemd unit. Use
+If a matching release artifact exists, the script fetches the pre-built binary
+and Waybar plugin, copies the examples and systemd unit, and performs the same
+post-install steps (backup, systemd reload, Waybar restart). Falling back to a
+source build happens automatically when no release archive is available. Use
 `curl … | bash -s -- --prefix /opt/codex-waybar` (or pass `--no-systemd`) to
 customise the installation.
 
-Prerequisites: `git`, `cargo`, and the GTK build dependencies required by
-`meson` (optional but recommended to install the animated plugin). When the
-installer runs with systemd support enabled it automatically reloads the user
+Prerequisites: `curl` and `tar` for the release path. If the script needs to
+build from source it will also require `git`, `cargo`, and the GTK/meson build
+toolchain. When systemd support is enabled the installer reloads the user
 daemon, enables+starts `codex-waybar.service`, and restarts `waybar` so the new
 module is active immediately.
+
+Prefer a manual download? Grab the latest tarball from the
+[Releases](https://github.com/jtaw5649/codex-waybar/releases) page and unpack
+it into your preferred prefix.
 
 Every run also snapshots your existing Waybar configuration into
 `$PREFIX/share/codex-waybar/backups/waybar-<timestamp>` (override with
